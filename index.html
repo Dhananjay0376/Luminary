@@ -1537,6 +1537,23 @@
       color: var(--ts)
     }
 
+    .zbadge.editing {
+      padding: 0;
+      border-color: var(--gold)
+    }
+
+    .zinput {
+      width: 68px;
+      border: none;
+      outline: none;
+      background: transparent;
+      color: var(--tp);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      text-align: center;
+      padding: 3px 9px
+    }
+
     .savind {
       font-family: 'JetBrains Mono', monospace;
       font-size: 11px;
@@ -2243,7 +2260,7 @@
 
       qsa('.tbb[data-tool]').forEach(function (b) { b.onclick = function () { Canvas.setTool(b.dataset.tool); }; });
       qs('#hbtn').onclick = function () { Canvas.resetView(); };
-      qs('#zbadge').onclick = function () { Canvas.resetView(); };
+      qs('#zbadge').onclick = function () { Canvas.startZoomEdit(); };
       qs('#tb-back').onclick = function () { App.navigate('dashboard', {}); };
       qs('#tb-pers').onclick = function () { Modal.bioPanel(); };
       qs('#tb-bio').onclick = function () { Modal.bioPanel(); };
@@ -2259,7 +2276,7 @@
       tool: 'select', selId: null, selectedConnId: null, rewiring: null,
       drawing: false, drawFrom: null,
       recorder: null, recInt: null, recChunks: [],
-      saveTimer: null, rafId: null, alive: false,
+      saveTimer: null, rafId: null, alive: false, zoomEditing: false,
 
       get vp() { return qs('#cw') },
       get world() { return qs('#world') },
@@ -2287,9 +2304,51 @@
         var w = this.world; if (!w) return;
         var tx = this.vpW / 2 + this.pan.x, ty = this.vpH / 2 + this.pan.y;
         w.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + this.zoom + ')';
-        var zb = qs('#zbadge'); if (zb) zb.textContent = Math.round(this.zoom * 100) + '%';
+        this.renderZoomBadge();
         this.drawConnections();
         this.drawMinimap();
+      },
+
+      renderZoomBadge: function () {
+        var zb = qs('#zbadge');
+        if (!zb || this.zoomEditing) return;
+        zb.textContent = Math.round(this.zoom * 100) + '%';
+        zb.title = 'Click to enter zoom percentage';
+      },
+
+      startZoomEdit: function () {
+        var self = this;
+        var zb = qs('#zbadge');
+        if (!zb || this.zoomEditing) return;
+        this.zoomEditing = true;
+        zb.classList.add('editing');
+        zb.innerHTML = '<input id="zinput" class="zinput" type="text" inputmode="numeric" aria-label="Zoom percentage">';
+        var input = qs('#zinput');
+        if (!input) return;
+        input.value = Math.round(this.zoom * 100);
+        input.focus();
+        input.select();
+
+        function finish(applyValue) {
+          if (!self.zoomEditing) return;
+          self.zoomEditing = false;
+          zb.classList.remove('editing');
+          if (applyValue) {
+            var raw = (input.value || '').replace('%', '').trim();
+            var pct = parseFloat(raw);
+            if (!isNaN(pct) && pct > 0) {
+              self.zoom = self.clampZoom(pct / 100);
+            }
+          }
+          self.renderZoomBadge();
+          self.applyTransform();
+        }
+
+        input.onkeydown = function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+          if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+        };
+        input.onblur = function () { finish(true); };
       },
 
       s2w: function (sx, sy) { return { x: (sx - this.vpW / 2 - this.pan.x) / this.zoom, y: (sy - this.vpH / 2 - this.pan.y) / this.zoom } },
