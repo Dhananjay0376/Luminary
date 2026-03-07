@@ -1851,11 +1851,140 @@
     // STORAGE
     // ============================================================
     var Store = {
-      getUser: function () { try { return JSON.parse(localStorage.getItem('lum:user')) } catch (e) { return null } },
-      setUser: function (u) { localStorage.setItem('lum:user', JSON.stringify(u)) },
-      clearUser: function () { localStorage.removeItem('lum:user') },
-      getUniverses: function (id) { try { return JSON.parse(localStorage.getItem('lum:u:' + id)) || [] } catch (e) { return [] } },
-      setUniverses: function (id, d) { try { localStorage.setItem('lum:u:' + id, JSON.stringify(d)) } catch (e) { console.warn('Storage full') } }
+      db: null,
+      dbName: 'luminary-db',
+      dbVersion: 1,
+      initPromise: null,
+      init: function () {
+        if (this.initPromise) return this.initPromise;
+        var self = this;
+        this.initPromise = new Promise(function (resolve, reject) {
+          if (!window.indexedDB) { reject(new Error('IndexedDB not supported')); return; }
+          var req = indexedDB.open(self.dbName, self.dbVersion);
+          req.onupgradeneeded = function (e) {
+            var db = e.target.result;
+            if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta');
+            if (!db.objectStoreNames.contains('users')) db.createObjectStore('users', { keyPath: 'id' });
+            if (!db.objectStoreNames.contains('universes')) {
+              var us = db.createObjectStore('universes', { keyPath: 'id' });
+              us.createIndex('userId', 'userId', { unique: false });
+            }
+          };
+          req.onsuccess = function (e) {
+            self.db = e.target.result;
+            self.db.onversionchange = function () { self.db.close(); };
+            self.migrateFromLocalStorage().then(function () {
+              resolve(self.db);
+            }).catch(reject);
+          };
+          req.onerror = function () { reject(req.error || new Error('Failed to open IndexedDB')); };
+        });
+        return this.initPromise;
+      },
+      tx: function (stores, mode) {
+        return this.db.transaction(stores, mode);
+      },
+      req: function (request) {
+        return new Promise(function (resolve, reject) {
+          request.onsuccess = function () { resolve(request.result); };
+          request.onerror = function () { reject(request.error || new Error('IndexedDB request failed')); };
+        });
+      },
+      getMeta: function (key) {
+        var tx = this.tx(['meta'], 'readonly');
+        return this.req(tx.objectStore('meta').get(key));
+      },
+      setMeta: function (key, value) {
+        var tx = this.tx(['meta'], 'readwrite');
+        return this.req(tx.objectStore('meta').put(value, key));
+      },
+      clearMeta: function (key) {
+        var tx = this.tx(['meta'], 'readwrite');
+        return this.req(tx.objectStore('meta').delete(key));
+      },
+      getAllUsers: function () {
+        var tx = this.tx(['users'], 'readonly');
+        return this.req(tx.objectStore('users').getAll());
+      },
+      saveUserAuth: function (user) {
+        var tx = this.tx(['users'], 'readwrite');
+        return this.req(tx.objectStore('users').put(user));
+      },
+      getUserByEmail: function (email) {
+        return this.getAllUsers().then(function (users) {
+          return users.find(function (u) { return u.email === email; }) || null;
+        });
+      },
+      getUserByCredentials: function (email, pw) {
+        return this.getAllUsers().then(function (users) {
+          return users.find(function (u) { return u.email === email && u.pw === pw; }) || null;
+        });
+      },
+      getUser: function () {
+        return this.getMeta('currentUser').then(function (u) { return u || null; }).catch(function () { return null; });
+      },
+      setUser: function (u) {
+        return this.setMeta('currentUser', u);
+      },
+      clearUser: function () {
+        return this.clearMeta('currentUser');
+      },
+      getUniverses: function (id) {
+        var tx = this.tx(['universes'], 'readonly');
+        var idx = tx.objectStore('universes').index('userId');
+        return this.req(idx.getAll(id)).then(function (items) {
+          return (items || []).sort(function (a, b) {
+            return new Date(b.modified || b.createdAt || 0) - new Date(a.modified || a.createdAt || 0);
+          }).map(function (item) {
+            var copy = Object.assign({}, item);
+            delete copy.userId;
+            return copy;
+          });
+        }).catch(function () { return []; });
+      },
+      setUniverses: function (id, data) {
+        return new Promise(function (resolve, reject) {
+          var tx = Store.tx(['universes'], 'readwrite');
+          var store = tx.objectStore('universes');
+          var index = store.index('userId');
+          var keysReq = index.getAllKeys(id);
+          keysReq.onsuccess = function () {
+            (keysReq.result || []).forEach(function (key) { store.delete(key); });
+            (data || []).forEach(function (u) {
+              store.put(Object.assign({ userId: id }, u));
+            });
+          };
+          keysReq.onerror = function () {
+            reject(keysReq.error || new Error('Failed to load universe keys'));
+          };
+          tx.oncomplete = function () { resolve(); };
+          tx.onerror = function () { reject(tx.error || new Error('Failed to save universes')); };
+          tx.onabort = function () { reject(tx.error || new Error('Save aborted')); };
+        }).catch(function (err) {
+          console.warn('IndexedDB save failed', err);
+        });
+      },
+      migrateFromLocalStorage: function () {
+        var self = this;
+        return this.getMeta('migratedFromLocalStorage').then(function (done) {
+          if (done) return;
+          var users = [];
+          try { users = JSON.parse(localStorage.getItem('lum:users')) || []; } catch (e) { }
+          var currentUser = null;
+          try { currentUser = JSON.parse(localStorage.getItem('lum:user')); } catch (e) { }
+          var tasks = [];
+          users.forEach(function (user) {
+            tasks.push(self.saveUserAuth(user));
+            var raw = null;
+            try { raw = JSON.parse(localStorage.getItem('lum:u:' + user.id)) || []; } catch (e) { raw = []; }
+            tasks.push(self.setUniverses(user.id, raw));
+          });
+          if (currentUser) tasks.push(self.setUser(currentUser));
+          return Promise.all(tasks).then(function () {
+            return self.setMeta('migratedFromLocalStorage', true);
+          });
+        });
+      }
     };
 
     // ============================================================
@@ -1998,7 +2127,7 @@
         setTimeout(function () { qs('#f-em').focus(); }, 80);
       }
 
-      function submit() {
+      async function submit() {
         var email = (qs('#f-em').value || '').trim().toLowerCase();
         var pw = qs('#f-pw').value || '';
         var name = qs('#f-nm') ? qs('#f-nm').value.trim() : '';
@@ -2006,20 +2135,28 @@
         if (!email || !email.includes('@')) { err.textContent = 'Please enter a valid email.'; err.classList.add('show'); return; }
         if (pw.length < 6) { err.textContent = 'Password must be at least 6 characters.'; err.classList.add('show'); return; }
         if (curMode === 'signup' && !name) { err.textContent = 'Please enter your name.'; err.classList.add('show'); return; }
-        var users = []; try { users = JSON.parse(localStorage.getItem('lum:users')) || []; } catch (e) { }
-        if (curMode === 'signup') {
-          if (users.find(function (u) { return u.email === email })) { err.textContent = 'Email already registered.'; err.classList.add('show'); return; }
-          var user = { id: uid(), name: name, email: email };
-          users.push(Object.assign({}, user, { pw: pw }));
-          localStorage.setItem('lum:users', JSON.stringify(users));
-          App.user = user; Store.setUser(user); App.universes = [];
-        } else {
-          var found = users.find(function (u) { return u.email === email && u.pw === pw });
-          if (!found) { err.textContent = 'Invalid email or password.'; err.classList.add('show'); return; }
-          App.user = { id: found.id, name: found.name, email: found.email }; Store.setUser(App.user);
-          App.universes = Store.getUniverses(App.user.id);
+        try {
+          if (curMode === 'signup') {
+            var existing = await Store.getUserByEmail(email);
+            if (existing) { err.textContent = 'Email already registered.'; err.classList.add('show'); return; }
+            var user = { id: uid(), name: name, email: email };
+            await Store.saveUserAuth(Object.assign({}, user, { pw: pw }));
+            App.user = user;
+            await Store.setUser(user);
+            App.universes = [];
+          } else {
+            var found = await Store.getUserByCredentials(email, pw);
+            if (!found) { err.textContent = 'Invalid email or password.'; err.classList.add('show'); return; }
+            App.user = { id: found.id, name: found.name, email: found.email };
+            await Store.setUser(App.user);
+            App.universes = await Store.getUniverses(App.user.id);
+          }
+          App.navigate('dashboard', {});
+        } catch (e) {
+          console.warn(e);
+          err.textContent = 'Unable to access local database.';
+          err.classList.add('show');
         }
-        App.navigate('dashboard', {});
       }
 
       qs('#tab-l').onclick = function () { curMode = 'login'; qs('#tab-l').classList.add('active'); qs('#tab-s').classList.remove('active'); renderForm(); };
@@ -2063,7 +2200,12 @@
       }
       renderGrid();
 
-      qs('#so-btn').onclick = function () { Store.clearUser(); App.user = null; App.universes = []; App.navigate('landing', {}); };
+      qs('#so-btn').onclick = function () {
+        Store.clearUser();
+        App.user = null;
+        App.universes = [];
+        App.navigate('landing', {});
+      };
 
       function showCreate() {
         var imgB64 = null, rel = 'partner';
@@ -2916,9 +3058,21 @@
     // ============================================================
     // BOOT
     // ============================================================
-    App.user = Store.getUser();
-    if (App.user) { App.universes = Store.getUniverses(App.user.id); Pages.dashboard({}); }
-    else { Pages.landing({}); }
+    (async function boot() {
+      try {
+        await Store.init();
+        App.user = await Store.getUser();
+        if (App.user) {
+          App.universes = await Store.getUniverses(App.user.id);
+          Pages.dashboard({});
+        } else {
+          Pages.landing({});
+        }
+      } catch (e) {
+        console.warn(e);
+        Pages.landing({});
+      }
+    })();
   </script>
 </body>
 
