@@ -1040,7 +1040,7 @@
       transform: translateX(100%);
       transition: transform .3s cubic-bezier(.22, 1, .36, 1);
       overflow-y: auto;
-      padding: 28px
+      padding: 28px 28px 110px
     }
 
     #biopanel.open {
@@ -1087,6 +1087,12 @@
       letter-spacing: 1px;
       text-align: center;
       margin-top: 4px
+    }
+
+    .bio-actions {
+      margin-top: 24px;
+      padding-top: 16px;
+      border-top: 1px solid var(--bd)
     }
 
     .bfield {
@@ -2700,6 +2706,8 @@
         App.on(document, 'keyup', function (e) { if (e.code === 'Space') { spaceDown = false; if (self.tool === 'select') vp.style.cursor = 'default'; } });
 
         App.on(vp, 'wheel', function (e) {
+          var panel = qs('#biopanel');
+          if (panel && panel.classList.contains('open') && e.target.closest && e.target.closest('#biopanel')) return;
           e.preventDefault();
           if (e.ctrlKey) {
             // Smooth zooming based on wheel delta instead of fixed jumps.
@@ -3102,17 +3110,34 @@
         setTimeout(function () { qs('#cap-ti').focus(); }, 60);
       },
 
+      saveBioPanel: function (closeAfter) {
+        var panel = qs('#biopanel');
+        var u = App.universe;
+        if (!panel || !u) return;
+        var met = qs('#bio-met'), ab = qs('#bio-ab'), ll = qs('#bio-ll');
+        if (!met || !ab || !ll) return;
+        var upd = { howWeMet: met.value, personBio: ab.value, loveLetter: ll.value };
+        if (upd.howWeMet !== (u.howWeMet || '') || upd.personBio !== (u.personBio || '') || upd.loveLetter !== (u.loveLetter || '')) {
+          App.updateUniverse(upd);
+          Canvas.flashSave();
+        }
+        if (closeAfter) {
+          panel.classList.remove('open');
+          this._bioOpen = false;
+        }
+      },
+
       bioPanel: function () {
         var panel = qs('#biopanel'); if (!panel) return;
         var u = App.universe; if (!u) return;
-        if (this._bioOpen) { panel.classList.remove('open'); this._bioOpen = false; return; }
+        if (this._bioOpen) { this.saveBioPanel(true); return; }
         this._bioOpen = true;
         var avHTML = u.personImageBase64 ? '<img src="' + u.personImageBase64 + '" alt="">' : '<span>' + personEmoji(u.relationship) + '</span>';
-        panel.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px"><span style="font-family:\'JetBrains Mono\',monospace;font-size:10px;color:var(--tm);letter-spacing:2px;text-transform:uppercase">Person Bio</span><span style="cursor:pointer;color:var(--ts);font-size:18px" id="bio-x">&#10005;</span></div><div class="bavatarw"><div class="bavatar">' + avHTML + '</div><div class="bname">' + escH(u.personName) + '</div><div class="brel">' + escH(u.relationship || 'person') + '</div></div><div class="bfield"><label>How We Met</label><textarea id="bio-met" rows="3" placeholder="Tell the story...">' + escH(u.howWeMet || '') + '</textarea></div><div class="bfield"><label>About Them</label><textarea id="bio-ab" rows="4" placeholder="What makes them special...">' + escH(u.personBio || '') + '</textarea></div><div class="bfield"><label>Love Letter</label><textarea id="bio-ll" rows="4" placeholder="A note from your heart...">' + escH(u.loveLetter || '') + '</textarea></div><div style="margin-bottom:16px"><label style="display:block;font-family:\'JetBrains Mono\',monospace;font-size:10px;color:var(--tm);letter-spacing:.5px;text-transform:uppercase;margin-bottom:10px">Memories</label><div class="bstats"><div class="bs"><div class="bsv">' + (u.nodes ? u.nodes.length : 0) + '</div><div class="bsl">Total</div></div><div class="bs"><div class="bsv">' + (u.nodes ? u.nodes.filter(function (n) { return n.type === 'note' }).length : 0) + '</div><div class="bsl">Notes</div></div><div class="bs"><div class="bsv">' + (u.nodes ? u.nodes.filter(function (n) { return n.type === 'photo' }).length : 0) + '</div><div class="bsl">Photos</div></div><div class="bs"><div class="bsv">' + (u.nodes ? u.nodes.filter(function (n) { return n.type === 'voice' }).length : 0) + '</div><div class="bsl">Voice</div></div></div></div><button class="bsm bsmp" id="bio-sv" style="width:100%">Save Bio</button>';
+        panel.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px"><span style="font-family:\'JetBrains Mono\',monospace;font-size:10px;color:var(--tm);letter-spacing:2px;text-transform:uppercase">Person Bio</span><span style="cursor:pointer;color:var(--ts);font-size:18px" id="bio-x">&#10005;</span></div><div class="bavatarw"><div class="bavatar">' + avHTML + '</div><div class="bname">' + escH(u.personName) + '</div><div class="brel">' + escH(u.relationship || 'person') + '</div></div><div class="bfield"><label>How We Met</label><textarea id="bio-met" rows="3" placeholder="Tell the story...">' + escH(u.howWeMet || '') + '</textarea></div><div class="bfield"><label>About Them</label><textarea id="bio-ab" rows="4" placeholder="What makes them special...">' + escH(u.personBio || '') + '</textarea></div><div class="bfield"><label>Love Letter</label><textarea id="bio-ll" rows="4" placeholder="A note from your heart...">' + escH(u.loveLetter || '') + '</textarea></div><div style="margin-bottom:16px"><label style="display:block;font-family:\'JetBrains Mono\',monospace;font-size:10px;color:var(--tm);letter-spacing:.5px;text-transform:uppercase;margin-bottom:10px">Memories</label><div class="bstats"><div class="bs"><div class="bsv">' + (u.nodes ? u.nodes.length : 0) + '</div><div class="bsl">Total</div></div><div class="bs"><div class="bsv">' + (u.nodes ? u.nodes.filter(function (n) { return n.type === 'note' }).length : 0) + '</div><div class="bsl">Notes</div></div><div class="bs"><div class="bsv">' + (u.nodes ? u.nodes.filter(function (n) { return n.type === 'photo' }).length : 0) + '</div><div class="bsl">Photos</div></div><div class="bs"><div class="bsv">' + (u.nodes ? u.nodes.filter(function (n) { return n.type === 'voice' }).length : 0) + '</div><div class="bsl">Voice</div></div></div></div><div class="bio-actions"><button class="bsm bsmp" id="bio-sv" style="width:100%">Save Bio</button></div>';
         panel.classList.add('open');
         var self = this;
-        qs('#bio-x').onclick = function () { panel.classList.remove('open'); self._bioOpen = false; };
-        qs('#bio-sv').onclick = function () { App.updateUniverse({ howWeMet: qs('#bio-met').value, personBio: qs('#bio-ab').value, loveLetter: qs('#bio-ll').value }); panel.classList.remove('open'); self._bioOpen = false; Canvas.flashSave(); };
+        qs('#bio-x').onclick = function () { self.saveBioPanel(true); };
+        qs('#bio-sv').onclick = function () { self.saveBioPanel(true); };
       },
 
       stats: function () {
