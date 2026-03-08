@@ -8,3 +8,4 @@ bucket_name = "your-r2-bucket-name"
 
 [vars]
 R2_PUBLIC_HOST = "media.example.com"
+FIREBASE_PROJECT_ID = "your-project-id"

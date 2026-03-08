@@ -9,6 +9,7 @@
     href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=Outfit:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
     rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="luminary.public.config.js"></script>
   <script src="luminary.config.js"></script>
   <script src="https://www.gstatic.com/firebasejs/12.7.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/12.7.0/firebase-auth-compat.js"></script>
@@ -2051,31 +2052,58 @@
       }
     };
 
-    var Config = window.LUMINARY_CONFIG || {
+    var Config = Object.assign({}, window.LUMINARY_PUBLIC_CONFIG || {}, window.LUMINARY_CONFIG || {});
+    if (!Config.firebase) Config.firebase = {
+      apiKey: '',
+      authDomain: '',
+      projectId: '',
+      appId: '',
+      storageBucket: '',
+      messagingSenderId: ''
+    };
+    if (!Config.cloudflare) Config.cloudflare = {
+      workerBaseUrl: ''
+    };
+    Config = {
       firebase: {
-        apiKey: '',
-        authDomain: '',
-        projectId: '',
-        appId: '',
-        storageBucket: '',
-        messagingSenderId: ''
+        apiKey: Config.firebase.apiKey || '',
+        authDomain: Config.firebase.authDomain || '',
+        projectId: Config.firebase.projectId || '',
+        appId: Config.firebase.appId || '',
+        storageBucket: Config.firebase.storageBucket || '',
+        messagingSenderId: Config.firebase.messagingSenderId || ''
       },
       cloudflare: {
-        workerBaseUrl: ''
+        accountId: (Config.cloudflare && Config.cloudflare.accountId) || '',
+        bucketName: (Config.cloudflare && Config.cloudflare.bucketName) || '',
+        publicBaseUrl: (Config.cloudflare && Config.cloudflare.publicBaseUrl) || '',
+        workerBaseUrl: (Config.cloudflare && Config.cloudflare.workerBaseUrl) || ''
       }
     };
-
     var Cloud = {
       app: null,
       auth: null,
       db: null,
       initPromise: null,
+      warnedMissingMediaConfig: false,
       isConfigured: function () {
         var f = Config.firebase || {};
         return !!(window.firebase && f.apiKey && f.authDomain && f.projectId && f.appId);
       },
       canUploadMedia: function () {
         return !!((Config.cloudflare || {}).workerBaseUrl);
+      },
+      getIdToken: function () {
+        if (!this.auth || !this.auth.currentUser) return Promise.reject(new Error('No Firebase user for media upload'));
+        return this.auth.currentUser.getIdToken();
+      },
+      ensureMediaConfig: function () {
+        if (this.canUploadMedia()) return true;
+        if (!this.warnedMissingMediaConfig) {
+          this.warnedMissingMediaConfig = true;
+          alert('Cloud media upload is not configured in this deployment. Use Firebase Hosting with your runtime config, or add luminary.public.config.js to this static deployment.');
+        }
+        return false;
       },
       init: function () {
         if (!this.isConfigured()) return Promise.resolve(null);
@@ -2205,23 +2233,34 @@
       },
       requestUpload: function (key, contentType) {
         if (!this.canUploadMedia()) return Promise.reject(new Error('Cloudflare worker not configured'));
-        return fetch((Config.cloudflare.workerBaseUrl || '').replace(/\/$/, '') + '/upload-url', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ key: key, contentType: contentType })
+        return this.getIdToken().then(function (token) {
+          return fetch((Config.cloudflare.workerBaseUrl || '').replace(/\/$/, '') + '/upload-url', {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'authorization': 'Bearer ' + token
+            },
+            body: JSON.stringify({ key: key, contentType: contentType })
+          });
         }).then(function (res) {
           if (!res.ok) throw new Error('Failed to create upload URL');
           return res.json();
         });
       },
       uploadFile: function (file, folder) {
+        var self = this;
         var ext = '';
         if (file && file.name && file.name.indexOf('.') !== -1) ext = '.' + file.name.split('.').pop().toLowerCase();
         var key = [folder || 'media', Date.now() + '-' + uid() + ext].join('/');
-        return this.requestUpload(key, file.type || 'application/octet-stream').then(function (info) {
+        return Promise.all([this.requestUpload(key, file.type || 'application/octet-stream'), this.getIdToken()]).then(function (results) {
+          var info = results[0];
+          var token = results[1];
           return fetch(info.uploadUrl, {
             method: 'PUT',
-            headers: { 'content-type': file.type || 'application/octet-stream' },
+            headers: {
+              'content-type': file.type || 'application/octet-stream',
+              'authorization': 'Bearer ' + token
+            },
             body: file
           }).then(function (res) {
             if (!res.ok) throw new Error('Upload failed');
@@ -2229,6 +2268,8 @@
           }).then(function (uploaded) {
             return { key: uploaded.key || key, url: uploaded.mediaUrl || info.mediaUrl };
           });
+        }).then(function (res) {
+          return res;
         });
       }
     };
@@ -3502,6 +3543,7 @@
       },
 
       addPhoto: function (pos) {
+        if (!Cloud.ensureMediaConfig()) return;
         var inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*'; inp.multiple = true;
         var self = this;
         inp.onchange = async function (e) {
@@ -3515,6 +3557,7 @@
       addVoice: function (pos) { Modal.voicePrompt(pos); },
 
       startVoiceRecord: function (pos) {
+        if (!Cloud.ensureMediaConfig()) return;
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { alert('Microphone access not available.'); return; }
         var self = this;
         navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
@@ -3560,6 +3603,7 @@
       },
 
       startVoiceUpload: function (pos) {
+        if (!Cloud.ensureMediaConfig()) return;
         var inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'audio/*'; inp.multiple = true;
         var self = this;
         inp.onchange = async function (e) {
@@ -3571,6 +3615,7 @@
       },
 
       addVideo: function (pos) {
+        if (!Cloud.ensureMediaConfig()) return;
         var inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'video/*'; inp.multiple = true;
         var self = this;
         inp.onchange = async function (e) {
@@ -3655,6 +3700,7 @@
         if (node.type === 'photo') {
           var pf = qs('#me-pf');
           if (pf) pf.onchange = function (e) {
+            if (!Cloud.ensureMediaConfig()) return;
             if (!e.target.files[0]) return;
             var file = e.target.files[0];
             if (Cloud.canUploadMedia()) {
@@ -3671,6 +3717,7 @@
         if (node.type === 'video') {
           var vf = qs('#me-vf');
           if (vf) vf.onchange = function (e) {
+            if (!Cloud.ensureMediaConfig()) return;
             if (!e.target.files[0]) return;
             var file = e.target.files[0];
             if (Cloud.canUploadMedia()) {
