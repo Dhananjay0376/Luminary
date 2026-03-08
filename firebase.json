@@ -1,0 +1,35 @@
+{
+  "firestore": {
+    "database": "(default)",
+    "location": "asia-south1",
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "hosting": {
+    "public": ".",
+    "ignore": [
+      "firebase.json",
+      "firestore.rules",
+      "firestore.indexes.json",
+      "cloudflare-worker.js",
+      "wrangler.toml",
+      "wrangler.toml.example",
+      "SETUP.md",
+      "luminary.config.example.js",
+      "public/**",
+      "functions/**",
+      "dataconnect/**",
+      ".firebase/**",
+      ".wrangler/**",
+      ".github/**",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  }
+}

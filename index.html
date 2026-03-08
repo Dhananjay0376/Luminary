@@ -9,6 +9,10 @@
     href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=Outfit:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
     rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="luminary.config.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/12.7.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/12.7.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore-compat.js"></script>
   <style>
     :root {
       --bg: #0A0A10;
@@ -622,6 +626,38 @@
 
     .asubmit:hover {
       opacity: .88
+    }
+
+    .aor {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 16px 0;
+      color: var(--tm);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px
+    }
+
+    .aor::before,
+    .aor::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--bd)
+    }
+
+    .agoogle {
+      width: 100%;
+      background: transparent;
+      color: var(--tp);
+      border: 1px solid var(--bd2);
+      box-shadow: none
+    }
+
+    .agoogle:hover {
+      opacity: 1;
+      border-color: rgba(255, 255, 255, .28)
     }
 
     /* DASHBOARD */
@@ -1929,6 +1965,11 @@
         var tx = this.tx(['users'], 'readonly');
         return this.req(tx.objectStore('users').getAll());
       },
+      getLegacyUserByEmail: function (email) {
+        return this.getAllUsers().then(function (users) {
+          return users.find(function (u) { return u.email === email; }) || null;
+        });
+      },
       saveUserAuth: function (user) {
         var tx = this.tx(['users'], 'readwrite');
         return this.req(tx.objectStore('users').put(user));
@@ -2010,6 +2051,196 @@
       }
     };
 
+    var Config = window.LUMINARY_CONFIG || {
+      firebase: {
+        apiKey: '',
+        authDomain: '',
+        projectId: '',
+        appId: '',
+        storageBucket: '',
+        messagingSenderId: ''
+      },
+      cloudflare: {
+        workerBaseUrl: ''
+      }
+    };
+
+    var Cloud = {
+      app: null,
+      auth: null,
+      db: null,
+      initPromise: null,
+      isConfigured: function () {
+        var f = Config.firebase || {};
+        return !!(window.firebase && f.apiKey && f.authDomain && f.projectId && f.appId);
+      },
+      canUploadMedia: function () {
+        return !!((Config.cloudflare || {}).workerBaseUrl);
+      },
+      init: function () {
+        if (!this.isConfigured()) return Promise.resolve(null);
+        if (this.initPromise) return this.initPromise;
+        var self = this;
+        this.initPromise = Promise.resolve().then(function () {
+          if (!firebase.apps.length) firebase.initializeApp(Config.firebase);
+          self.app = firebase.app();
+          self.auth = firebase.auth();
+          self.db = firebase.firestore();
+          return self.app;
+        });
+        return this.initPromise;
+      },
+      waitForAuth: function () {
+        return this.init().then(function () {
+          return new Promise(function (resolve) {
+            var off = firebase.auth().onAuthStateChanged(function (user) {
+              off();
+              resolve(user || null);
+            });
+          });
+        });
+      },
+      normalizeUser: function (user) {
+        if (!user) return null;
+        return {
+          id: user.uid,
+          uid: user.uid,
+          name: user.displayName || ((user.email || '').split('@')[0] || 'User'),
+          email: user.email || '',
+          provider: 'firebase'
+        };
+      },
+      signup: function (email, pw, name) {
+        return this.init().then(function () {
+          return firebase.auth().createUserWithEmailAndPassword(email, pw).then(function (cred) {
+            return cred.user.updateProfile({ displayName: name }).then(function () {
+              var user = cred.user;
+              return firebase.firestore().collection('users').doc(user.uid).set({
+                name: name,
+                email: email,
+                updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+              }, { merge: true }).then(function () {
+                return Cloud.normalizeUser(user);
+              });
+            });
+          });
+        });
+      },
+      login: function (email, pw) {
+        return this.init().then(function () {
+          return firebase.auth().signInWithEmailAndPassword(email, pw).then(function (cred) {
+            return Cloud.normalizeUser(cred.user);
+          });
+        });
+      },
+      loginWithGoogle: function () {
+        return this.init().then(function () {
+          var provider = new firebase.auth.GoogleAuthProvider();
+          return firebase.auth().signInWithPopup(provider).then(function (cred) {
+            var user = cred.user;
+            return firebase.firestore().collection('users').doc(user.uid).set({
+              name: user.displayName || ((user.email || '').split('@')[0] || 'User'),
+              email: user.email || '',
+              photoURL: user.photoURL || '',
+              updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+              createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            }, { merge: true }).then(function () {
+              return Cloud.normalizeUser(user);
+            });
+          });
+        });
+      },
+      logout: function () {
+        return this.init().then(function () { return firebase.auth().signOut(); });
+      },
+      getUniverses: function (uid) {
+        return this.init().then(function () {
+          return firebase.firestore().collection('users').doc(uid).collection('universes').get().then(function (snap) {
+            var items = [];
+            snap.forEach(function (doc) {
+              var data = doc.data() || {};
+              data.id = data.id || doc.id;
+              items.push(data);
+            });
+            items.sort(function (a, b) {
+              return new Date(b.modified || b.createdAt || 0) - new Date(a.modified || a.createdAt || 0);
+            });
+            return items;
+          });
+        });
+      },
+      setUniverses: function (uid, universes) {
+        return this.init().then(function () {
+          var col = firebase.firestore().collection('users').doc(uid).collection('universes');
+          return col.get().then(function (snap) {
+            var batch = firebase.firestore().batch();
+            var keep = {};
+            (universes || []).forEach(function (u) {
+              keep[u.id] = true;
+              batch.set(col.doc(u.id), Object.assign({}, u, {
+                ownerId: uid,
+                modified: u.modified || new Date().toISOString()
+              }), { merge: true });
+            });
+            snap.forEach(function (doc) {
+              if (!keep[doc.id]) batch.delete(doc.ref);
+            });
+            return batch.commit();
+          });
+        });
+      },
+      setUniverse: function (uid, universe) {
+        return this.init().then(function () {
+          return firebase.firestore().collection('users').doc(uid).collection('universes').doc(universe.id).set(Object.assign({}, universe, {
+            ownerId: uid,
+            modified: universe.modified || new Date().toISOString()
+          }), { merge: true });
+        });
+      },
+      deleteUniverse: function (uid, universeId) {
+        return this.init().then(function () {
+          return firebase.firestore().collection('users').doc(uid).collection('universes').doc(universeId).delete();
+        });
+      },
+      requestUpload: function (key, contentType) {
+        if (!this.canUploadMedia()) return Promise.reject(new Error('Cloudflare worker not configured'));
+        return fetch((Config.cloudflare.workerBaseUrl || '').replace(/\/$/, '') + '/upload-url', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ key: key, contentType: contentType })
+        }).then(function (res) {
+          if (!res.ok) throw new Error('Failed to create upload URL');
+          return res.json();
+        });
+      },
+      uploadFile: function (file, folder) {
+        var ext = '';
+        if (file && file.name && file.name.indexOf('.') !== -1) ext = '.' + file.name.split('.').pop().toLowerCase();
+        var key = [folder || 'media', Date.now() + '-' + uid() + ext].join('/');
+        return this.requestUpload(key, file.type || 'application/octet-stream').then(function (info) {
+          return fetch(info.uploadUrl, {
+            method: 'PUT',
+            headers: { 'content-type': file.type || 'application/octet-stream' },
+            body: file
+          }).then(function (res) {
+            if (!res.ok) throw new Error('Upload failed');
+            return res.json();
+          }).then(function (uploaded) {
+            return { key: uploaded.key || key, url: uploaded.mediaUrl || info.mediaUrl };
+          });
+        });
+      }
+    };
+
+    function mediaSrc(node, kind) {
+      if (!node) return '';
+      if (kind === 'image') return node.imageUrl || node.imageBase64 || '';
+      if (kind === 'audio') return node.audioUrl || node.audioBase64 || '';
+      if (kind === 'video') return node.videoUrl || node.videoBase64 || '';
+      return '';
+    }
+
     // ============================================================
     // APP STATE
     // ============================================================
@@ -2018,6 +2249,8 @@
       historyLimit: 80,
       _history: {},
       _restoringHistory: false,
+      _storeSaveTimer: null,
+      _cloudSaveTimer: null,
       _evs: [],
       on: function (el, type, fn) { el.addEventListener(type, fn); this._evs.push({ el: el, type: type, fn: fn }) },
       offAll: function () { this._evs.forEach(function (e) { e.el.removeEventListener(e.type, e.fn) }); this._evs = [] },
@@ -2034,9 +2267,11 @@
       ensureHistory: function () {
         if (!this.activeId) return null;
         if (!this._history[this.activeId]) {
-          this._history[this.activeId] = { undo: [], redo: [], current: this.cloneData(this.universe) };
+          var current = this.cloneData(this.universe);
+          this._history[this.activeId] = { undo: [], redo: [], current: current, currentSerialized: JSON.stringify(current || null) };
         } else if (!this._history[this.activeId].current && this.universe) {
           this._history[this.activeId].current = this.cloneData(this.universe);
+          this._history[this.activeId].currentSerialized = JSON.stringify(this._history[this.activeId].current || null);
         }
         return this._history[this.activeId];
       },
@@ -2045,13 +2280,30 @@
         var u = this.universe;
         if (!entry || !u || this._restoringHistory) return;
         var next = this.cloneData(u);
-        var prevStr = JSON.stringify(entry.current || null);
         var nextStr = JSON.stringify(next);
-        if (prevStr === nextStr) return;
+        if ((entry.currentSerialized || 'null') === nextStr) return;
         if (entry.current) entry.undo.push(entry.current);
         if (entry.undo.length > this.historyLimit) entry.undo.shift();
         entry.current = next;
+        entry.currentSerialized = nextStr;
         entry.redo = [];
+      },
+      queuePersistence: function () {
+        var self = this;
+        if (!this.user) return;
+        clearTimeout(this._storeSaveTimer);
+        this._storeSaveTimer = setTimeout(function () {
+          Store.setUniverses(self.user.id, self.universes);
+        }, 120);
+        if (Cloud.isConfigured() && this.user.provider === 'firebase' && this.universe) {
+          clearTimeout(this._cloudSaveTimer);
+          var universeSnapshot = this.cloneData(this.universe);
+          this._cloudSaveTimer = setTimeout(function () {
+            Cloud.setUniverse(self.user.id, universeSnapshot).catch(function (err) {
+              console.warn('Cloud sync failed', err);
+            });
+          }, 900);
+        }
       },
       refreshCanvasState: function () {
         if (!Canvas.world) return;
@@ -2065,10 +2317,41 @@
         Canvas.buildWorld();
         Canvas.applyTransform();
       },
+      importLegacyUniversesForCloudUser: async function (user, currentUniverses) {
+        if (!user || !user.email) return { universes: currentUniverses || [], importedCount: 0 };
+        var importedKey = 'lum:legacy-import:' + user.id;
+        var alreadyImported = await Store.getMeta(importedKey).catch(function () { return null; });
+        if (alreadyImported) return { universes: currentUniverses || [], importedCount: 0 };
+
+        var legacyUser = await Store.getLegacyUserByEmail(user.email).catch(function () { return null; });
+        if (!legacyUser || legacyUser.id === user.id) {
+          await Store.setMeta(importedKey, true).catch(function () { });
+          return { universes: currentUniverses || [], importedCount: 0 };
+        }
+
+        var legacyUniverses = await Store.getUniverses(legacyUser.id).catch(function () { return []; });
+        if (!legacyUniverses.length) {
+          await Store.setMeta(importedKey, true).catch(function () { });
+          return { universes: currentUniverses || [], importedCount: 0 };
+        }
+
+        var existing = currentUniverses || [];
+        var seen = {};
+        existing.forEach(function (u) { seen[u.id] = true; });
+        var imported = legacyUniverses.map(function (u) {
+          var copy = App.cloneData(u);
+          if (seen[copy.id]) copy.id = uid();
+          seen[copy.id] = true;
+          return copy;
+        });
+        var merged = existing.concat(imported);
+        await Store.setMeta(importedKey, true).catch(function () { });
+        return { universes: merged, importedCount: imported.length };
+      },
       save: function () {
         if (!this.user) return;
         this.commitHistorySnapshot();
-        Store.setUniverses(this.user.id, this.universes);
+        this.queuePersistence();
       },
       undo: function () {
         var entry = this.ensureHistory();
@@ -2081,7 +2364,8 @@
         this._restoringHistory = true;
         this.universes[idx] = this.cloneData(prev);
         this._restoringHistory = false;
-        Store.setUniverses(this.user.id, this.universes);
+        entry.currentSerialized = JSON.stringify(entry.current || null);
+        this.queuePersistence();
         this.refreshCanvasState();
         Canvas.flashSave();
       },
@@ -2096,7 +2380,8 @@
         this._restoringHistory = true;
         this.universes[idx] = this.cloneData(next);
         this._restoringHistory = false;
-        Store.setUniverses(this.user.id, this.universes);
+        entry.currentSerialized = JSON.stringify(entry.current || null);
+        this.queuePersistence();
         this.refreshCanvasState();
         Canvas.flashSave();
       },
@@ -2221,14 +2506,40 @@
 
       function renderForm() {
         var f = qs('#aform');
+        var googleBtn = Cloud.isConfigured()
+          ? '<div class="aor">or</div><button class="asubmit agoogle" id="agoogle">' + (curMode === 'login' ? 'Continue with Google' : 'Sign up with Google') + '</button>'
+          : '';
         f.innerHTML = curMode === 'login'
-          ? '<div class="field"><label>Email</label><input id="f-em" type="email" placeholder="you@example.com" autocomplete="email"></div><div class="field"><label>Password</label><input id="f-pw" type="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password"></div><button class="asubmit" id="asubmit">Sign In &rarr;</button><p style="text-align:center;margin-top:14px;font-size:12px;color:var(--tm)">No account? <span style="color:var(--gold);cursor:pointer" id="sw">Create one free</span></p>'
-          : '<div class="field"><label>Your Name</label><input id="f-nm" type="text" placeholder="Your full name" autocomplete="name"></div><div class="field"><label>Email</label><input id="f-em" type="email" placeholder="you@example.com" autocomplete="email"></div><div class="field"><label>Password</label><input id="f-pw" type="password" placeholder="At least 6 characters" autocomplete="new-password"></div><button class="asubmit" id="asubmit">Create Account &rarr;</button><p style="text-align:center;margin-top:14px;font-size:12px;color:var(--tm)">Already have one? <span style="color:var(--gold);cursor:pointer" id="sw">Sign in</span></p>';
+          ? '<div class="field"><label>Email</label><input id="f-em" type="email" placeholder="you@example.com" autocomplete="email"></div><div class="field"><label>Password</label><input id="f-pw" type="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password"></div><button class="asubmit" id="asubmit">Sign In &rarr;</button>' + googleBtn + '<p style="text-align:center;margin-top:14px;font-size:12px;color:var(--tm)">No account? <span style="color:var(--gold);cursor:pointer" id="sw">Create one free</span></p>'
+          : '<div class="field"><label>Your Name</label><input id="f-nm" type="text" placeholder="Your full name" autocomplete="name"></div><div class="field"><label>Email</label><input id="f-em" type="email" placeholder="you@example.com" autocomplete="email"></div><div class="field"><label>Password</label><input id="f-pw" type="password" placeholder="At least 6 characters" autocomplete="new-password"></div><button class="asubmit" id="asubmit">Create Account &rarr;</button>' + googleBtn + '<p style="text-align:center;margin-top:14px;font-size:12px;color:var(--tm)">Already have one? <span style="color:var(--gold);cursor:pointer" id="sw">Sign in</span></p>';
         err.classList.remove('show');
         qs('#asubmit').onclick = submit;
+        var g = qs('#agoogle');
+        if (g) g.onclick = googleSubmit;
         qs('#sw').onclick = function () { curMode = curMode === 'login' ? 'signup' : 'login'; qs('#tab-l').classList.toggle('active', curMode === 'login'); qs('#tab-s').classList.toggle('active', curMode === 'signup'); renderForm(); };
         qs('#f-pw').onkeydown = function (e) { if (e.key === 'Enter') submit(); };
         setTimeout(function () { qs('#f-em').focus(); }, 80);
+      }
+
+      async function googleSubmit() {
+        err.classList.remove('show');
+        try {
+          App.user = await Cloud.loginWithGoogle();
+          App.universes = await Cloud.getUniverses(App.user.id).catch(function () { return []; });
+          var imported = await App.importLegacyUniversesForCloudUser(App.user, App.universes);
+          App.universes = imported.universes;
+          await Store.setUser(App.user);
+          await Store.setUniverses(App.user.id, App.universes);
+          if (imported.importedCount) {
+            await Cloud.setUniverses(App.user.id, App.universes).catch(function (e) { console.warn('Cloud sync failed', e); });
+            alert('Imported ' + imported.importedCount + ' local universe' + (imported.importedCount > 1 ? 's' : '') + ' into your cloud account.');
+          }
+          App.navigate('dashboard', {});
+        } catch (e) {
+          console.warn(e);
+          err.textContent = 'Unable to sign in with Google.';
+          err.classList.add('show');
+        }
       }
 
       async function submit() {
@@ -2240,25 +2551,43 @@
         if (pw.length < 6) { err.textContent = 'Password must be at least 6 characters.'; err.classList.add('show'); return; }
         if (curMode === 'signup' && !name) { err.textContent = 'Please enter your name.'; err.classList.add('show'); return; }
         try {
-          if (curMode === 'signup') {
-            var existing = await Store.getUserByEmail(email);
-            if (existing) { err.textContent = 'Email already registered.'; err.classList.add('show'); return; }
-            var user = { id: uid(), name: name, email: email };
-            await Store.saveUserAuth(Object.assign({}, user, { pw: pw }));
-            App.user = user;
-            await Store.setUser(user);
-            App.universes = [];
-          } else {
-            var found = await Store.getUserByCredentials(email, pw);
-            if (!found) { err.textContent = 'Invalid email or password.'; err.classList.add('show'); return; }
-            App.user = { id: found.id, name: found.name, email: found.email };
+          if (Cloud.isConfigured()) {
+            if (curMode === 'signup') {
+              App.user = await Cloud.signup(email, pw, name);
+              App.universes = [];
+            } else {
+              App.user = await Cloud.login(email, pw);
+              App.universes = await Cloud.getUniverses(App.user.id).catch(function () { return []; });
+            }
+            var imported = await App.importLegacyUniversesForCloudUser(App.user, App.universes);
+            App.universes = imported.universes;
             await Store.setUser(App.user);
-            App.universes = await Store.getUniverses(App.user.id);
+            await Store.setUniverses(App.user.id, App.universes);
+            if (imported.importedCount) {
+              await Cloud.setUniverses(App.user.id, App.universes).catch(function (e) { console.warn('Cloud sync failed', e); });
+              alert('Imported ' + imported.importedCount + ' local universe' + (imported.importedCount > 1 ? 's' : '') + ' into your cloud account.');
+            }
+          } else {
+            if (curMode === 'signup') {
+              var existing = await Store.getUserByEmail(email);
+              if (existing) { err.textContent = 'Email already registered.'; err.classList.add('show'); return; }
+              var user = { id: uid(), name: name, email: email };
+              await Store.saveUserAuth(Object.assign({}, user, { pw: pw }));
+              App.user = user;
+              await Store.setUser(user);
+              App.universes = [];
+            } else {
+              var found = await Store.getUserByCredentials(email, pw);
+              if (!found) { err.textContent = 'Invalid email or password.'; err.classList.add('show'); return; }
+              App.user = { id: found.id, name: found.name, email: found.email };
+              await Store.setUser(App.user);
+              App.universes = await Store.getUniverses(App.user.id);
+            }
           }
           App.navigate('dashboard', {});
         } catch (e) {
           console.warn(e);
-          err.textContent = 'Unable to access local database.';
+          err.textContent = Cloud.isConfigured() ? 'Unable to sign in with Firebase.' : 'Unable to access local database.';
           err.classList.add('show');
         }
       }
@@ -2292,6 +2621,9 @@
             e.stopPropagation();
             if (confirm('Delete "' + u.personName + '"\'s universe? This cannot be undone.')) {
               App.universes = App.universes.filter(function (x) { return x.id !== u.id });
+              if (Cloud.isConfigured() && App.user && App.user.provider === 'firebase') {
+                Cloud.deleteUniverse(App.user.id, u.id).catch(function (err) { console.warn('Cloud delete failed', err); });
+              }
               App.save(); renderGrid();
             }
           };
@@ -2305,10 +2637,17 @@
       renderGrid();
 
       qs('#so-btn').onclick = function () {
-        Store.clearUser();
-        App.user = null;
-        App.universes = [];
-        App.navigate('landing', {});
+        var finish = function () {
+          Store.clearUser();
+          App.user = null;
+          App.universes = [];
+          App.navigate('landing', {});
+        };
+        if (Cloud.isConfigured() && App.user && App.user.provider === 'firebase') {
+          Cloud.logout().catch(function (err) { console.warn(err); }).finally(finish);
+          return;
+        }
+        finish();
       };
 
       function showCreate() {
@@ -2519,10 +2858,12 @@
         if (node.type === 'note') {
           inner = '<div class="nc nc-note" style="animation-duration:' + dur + ';animation-delay:' + delay + '"><div class="ntype" style="color:var(--note)">NOTE</div><div class="ntitle">' + escH(node.title) + '</div>' + (node.content ? '<div class="nbody">' + escH(node.content) + '</div>' : '') + '<div class="ndate">' + fmtDate(node.date) + '</div></div>';
         } else if (node.type === 'photo') {
-          var imgTag = node.imageBase64 ? '<img src="' + node.imageBase64 + '" class="pthumb" alt="">' : '<div class="pthumb" style="background:var(--surf2);display:flex;align-items:center;justify-content:center;font-size:28px">&#128444;</div>';
+          var imgSrc = mediaSrc(node, 'image');
+          var imgTag = imgSrc ? '<img src="' + imgSrc + '" class="pthumb" alt="">' : '<div class="pthumb" style="background:var(--surf2);display:flex;align-items:center;justify-content:center;font-size:28px">&#128444;</div>';
           inner = '<div class="nc nc-photo" style="animation-duration:' + dur + ';animation-delay:' + delay + '">' + imgTag + '<div class="pstrip"><div class="ntype" style="color:var(--photo)">PHOTO</div><div class="ntitle">' + escH(node.title) + '</div><div class="ndate">' + fmtDate(node.date) + '</div></div></div>';
         } else if (node.type === 'video') {
-          var vidTag = node.videoBase64 ? '<video src="' + node.videoBase64 + '" class="pthumb" style="width:100%;height:100px;object-fit:cover;border-radius:12px;margin-bottom:12px" muted loop autoplay></video>' : '<div class="pthumb" style="background:var(--surf2);display:flex;align-items:center;justify-content:center;font-size:28px">&#128249;</div>';
+          var vidSrc = mediaSrc(node, 'video');
+          var vidTag = vidSrc ? '<video src="' + vidSrc + '" class="pthumb" style="width:100%;height:100px;object-fit:cover;border-radius:12px;margin-bottom:12px" muted loop autoplay></video>' : '<div class="pthumb" style="background:var(--surf2);display:flex;align-items:center;justify-content:center;font-size:28px">&#128249;</div>';
           inner = '<div class="nc nc-video" style="animation-duration:' + dur + ';animation-delay:' + delay + '">' + vidTag + '<div class="pstrip"><div class="ntype" style="color:var(--video)">VIDEO</div><div class="ntitle">' + escH(node.title) + '</div><div class="ndate">' + fmtDate(node.date) + '</div></div></div>';
         } else if (node.type === 'voice') {
           var bars = '';
@@ -2980,6 +3321,34 @@
 
       createPhotoNodeFromFile: function (file, pos) {
         var self = this;
+        if (Cloud.canUploadMedia()) {
+          return Cloud.uploadFile(file, 'photos').then(function (uploaded) {
+            return {
+              id: uid(),
+              type: 'photo',
+              title: self.fileTitle(file, 'Photo Memory'),
+              content: '',
+              imageUrl: uploaded.url,
+              imageKey: uploaded.key,
+              date: new Date().toISOString(),
+              pos: pos
+            };
+          }).catch(function () {
+            return new Promise(function (resolve) {
+              compressImage(file, function (b64) {
+                resolve({
+                  id: uid(),
+                  type: 'photo',
+                  title: self.fileTitle(file, 'Photo Memory'),
+                  content: '',
+                  imageBase64: b64,
+                  date: new Date().toISOString(),
+                  pos: pos
+                });
+              });
+            });
+          });
+        }
         return new Promise(function (resolve) {
           compressImage(file, function (b64) {
             resolve({
@@ -3013,6 +3382,41 @@
               pos: pos
             });
           }
+          if (Cloud.canUploadMedia()) {
+            var url = URL.createObjectURL(file);
+            var au = new Audio(url);
+            au.onloadedmetadata = function () {
+              var secs = Math.round(au.duration || 0);
+              Cloud.uploadFile(file, 'audio').then(function (uploaded) {
+                URL.revokeObjectURL(url);
+                if (done) return;
+                done = true;
+                resolve({
+                  id: uid(),
+                  type: 'voice',
+                  title: self.fileTitle(file, 'Voice Memo'),
+                  content: '',
+                  audioUrl: uploaded.url,
+                  audioKey: uploaded.key,
+                  duration: secs,
+                  date: new Date().toISOString(),
+                  pos: pos
+                });
+              }).catch(function () {
+                URL.revokeObjectURL(url);
+                var frFallback = new FileReader();
+                frFallback.onload = function (ev) { finish(ev.target.result, secs); };
+                frFallback.readAsDataURL(file);
+              });
+            };
+            au.onerror = function () {
+              URL.revokeObjectURL(url);
+              var frCloudFallback = new FileReader();
+              frCloudFallback.onload = function (ev) { finish(ev.target.result, 0); };
+              frCloudFallback.readAsDataURL(file);
+            };
+            return;
+          }
           var fr = new FileReader();
           fr.onload = function (ev) { finish(ev.target.result, 0); };
           var url = URL.createObjectURL(file);
@@ -3032,6 +3436,36 @@
 
       createVideoNodeFromFile: function (file, pos) {
         var self = this;
+        if (Cloud.canUploadMedia()) {
+          return Cloud.uploadFile(file, 'videos').then(function (uploaded) {
+            return {
+              id: uid(),
+              type: 'video',
+              title: self.fileTitle(file, 'Video Memory'),
+              content: '',
+              videoUrl: uploaded.url,
+              videoKey: uploaded.key,
+              date: new Date().toISOString(),
+              pos: pos
+            };
+          }).catch(function () {
+            return new Promise(function (resolve) {
+              var frFallback = new FileReader();
+              frFallback.onload = function (ev) {
+                resolve({
+                  id: uid(),
+                  type: 'video',
+                  title: self.fileTitle(file, 'Video Memory'),
+                  content: '',
+                  videoBase64: ev.target.result,
+                  date: new Date().toISOString(),
+                  pos: pos
+                });
+              };
+              frFallback.readAsDataURL(file);
+            });
+          });
+        }
         return new Promise(function (resolve) {
           var fr = new FileReader();
           fr.onload = function (ev) {
@@ -3091,16 +3525,31 @@
           self.recorder.onstop = function () {
             stream.getTracks().forEach(function (t) { t.stop(); });
             var blob = new Blob(self.recChunks, { type: 'audio/webm' });
-            var fr = new FileReader();
-            fr.onload = function (ev) {
-              var secs = Math.round((Date.now() - recStart) / 1000);
-              var node = { id: uid(), type: 'voice', title: 'Voice Memo', content: '', audioBase64: ev.target.result, duration: secs, date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } };
+            var secs = Math.round((Date.now() - recStart) / 1000);
+            var finishNode = function (node) {
               App.addNode(node, { deferSave: true }); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#5A8A6A' });
               self.addNodeEl(node); self.drawConnections(); self.drawMinimap();
               var rh = qs('#rchud'); if (rh) rh.style.display = 'none';
               clearInterval(self.recInt);
             };
-            fr.readAsDataURL(blob);
+            if (Cloud.canUploadMedia()) {
+              var recFile = new File([blob], 'voice-' + Date.now() + '.webm', { type: blob.type || 'audio/webm' });
+              Cloud.uploadFile(recFile, 'audio').then(function (uploaded) {
+                finishNode({ id: uid(), type: 'voice', title: 'Voice Memo', content: '', audioUrl: uploaded.url, audioKey: uploaded.key, duration: secs, date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } });
+              }).catch(function () {
+                var frFallback = new FileReader();
+                frFallback.onload = function (ev) {
+                  finishNode({ id: uid(), type: 'voice', title: 'Voice Memo', content: '', audioBase64: ev.target.result, duration: secs, date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } });
+                };
+                frFallback.readAsDataURL(blob);
+              });
+            } else {
+              var fr = new FileReader();
+              fr.onload = function (ev) {
+                finishNode({ id: uid(), type: 'voice', title: 'Voice Memo', content: '', audioBase64: ev.target.result, duration: secs, date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } });
+              };
+              fr.readAsDataURL(blob);
+            }
           };
           self.recorder.start();
           var rh = qs('#rchud'); if (rh) rh.style.display = 'flex';
@@ -3194,9 +3643,9 @@
         var dateVal = node.date ? node.date.split('T')[0] : '';
         var extraFields = '';
         if (node.type === 'note') { extraFields = '<div class="field"><label>Notes</label><textarea id="me-ct" class="nca" rows="5">' + escH(node.content) + '</textarea></div>'; }
-        else if (node.type === 'photo') { extraFields = '<div class="field"><label>Caption</label><textarea id="me-ct" class="nca" rows="2">' + escH(node.content) + '</textarea></div><div class="field"><label>Replace Photo</label><input type="file" id="me-pf" accept="image/*">' + (node.imageBase64 ? '<img id="me-pi" src="' + node.imageBase64 + '" class="iprev">' : '<img id="me-pi" class="iprev" style="display:none">') + '</div>'; }
-        else if (node.type === 'video') { extraFields = '<div class="field"><label>Caption</label><textarea id="me-ct" class="nca" rows="2">' + escH(node.content) + '</textarea></div><div class="field"><label>Replace Video</label><input type="file" id="me-vf" accept="video/*">' + (node.videoBase64 ? '<video id="me-vi" src="' + node.videoBase64 + '" class="iprev" controls></video>' : '<video id="me-vi" class="iprev" controls style="display:none"></video>') + '</div>'; }
-        else if (node.type === 'voice') { extraFields = node.audioBase64 ? '<audio controls src="' + node.audioBase64 + '" class="aprev"></audio>' : ''; }
+        else if (node.type === 'photo') { var psrc = mediaSrc(node, 'image'); extraFields = '<div class="field"><label>Caption</label><textarea id="me-ct" class="nca" rows="2">' + escH(node.content) + '</textarea></div><div class="field"><label>Replace Photo</label><input type="file" id="me-pf" accept="image/*">' + (psrc ? '<img id="me-pi" src="' + psrc + '" class="iprev">' : '<img id="me-pi" class="iprev" style="display:none">') + '</div>'; }
+        else if (node.type === 'video') { var vsrc = mediaSrc(node, 'video'); extraFields = '<div class="field"><label>Caption</label><textarea id="me-ct" class="nca" rows="2">' + escH(node.content) + '</textarea></div><div class="field"><label>Replace Video</label><input type="file" id="me-vf" accept="video/*">' + (vsrc ? '<video id="me-vi" src="' + vsrc + '" class="iprev" controls></video>' : '<video id="me-vi" class="iprev" controls style="display:none"></video>') + '</div>'; }
+        else if (node.type === 'voice') { var asrc = mediaSrc(node, 'audio'); extraFields = asrc ? '<audio controls src="' + asrc + '" class="aprev"></audio>' : ''; }
         else if (node.type === 'capsule') { var ulVal = node.unlockDate ? node.unlockDate.split('T')[0] : ''; extraFields = '<div class="field"><label>Secret Message</label><textarea id="me-ct" class="nca" rows="4">' + escH(node.content) + '</textarea></div><div class="field"><label>Unlock Date</label><input id="me-ul" type="date" value="' + ulVal + '" style="width:100%;background:var(--surf2);border:1px solid var(--bd2);border-radius:10px;padding:11px 14px;color:var(--tp);font-size:14px;outline:none"></div>'; }
         else if (node.type === 'universe') { extraFields = '<div class="field"><label>Description</label><textarea id="me-ct" class="nca" rows="2">' + escH(node.content) + '</textarea></div><button class="bsm bsmp" id="me-enter-univ" style="width:100%;margin-top:10px;padding:12px;font-size:15px">Enter Universe &rarr;</button>'; }
 
@@ -3207,16 +3656,36 @@
           var pf = qs('#me-pf');
           if (pf) pf.onchange = function (e) {
             if (!e.target.files[0]) return;
-            compressImage(e.target.files[0], function (b64) { var pi = qs('#me-pi'); if (pi) { pi.src = b64; pi.style.display = 'block'; pi.dataset.newsrc = b64; } });
+            var file = e.target.files[0];
+            if (Cloud.canUploadMedia()) {
+              Cloud.uploadFile(file, 'photos').then(function (uploaded) {
+                var pi = qs('#me-pi'); if (pi) { pi.src = uploaded.url; pi.style.display = 'block'; pi.dataset.newurl = uploaded.url; pi.dataset.newkey = uploaded.key; delete pi.dataset.newsrc; }
+              }).catch(function () {
+                compressImage(file, function (b64) { var pi = qs('#me-pi'); if (pi) { pi.src = b64; pi.style.display = 'block'; pi.dataset.newsrc = b64; delete pi.dataset.newurl; delete pi.dataset.newkey; } });
+              });
+            } else {
+              compressImage(file, function (b64) { var pi = qs('#me-pi'); if (pi) { pi.src = b64; pi.style.display = 'block'; pi.dataset.newsrc = b64; } });
+            }
           };
         }
         if (node.type === 'video') {
           var vf = qs('#me-vf');
           if (vf) vf.onchange = function (e) {
             if (!e.target.files[0]) return;
-            var fr = new FileReader();
-            fr.onload = function (ev) { var vi = qs('#me-vi'); if (vi) { vi.src = ev.target.result; vi.style.display = 'block'; vi.dataset.newsrc = ev.target.result; } };
-            fr.readAsDataURL(e.target.files[0]);
+            var file = e.target.files[0];
+            if (Cloud.canUploadMedia()) {
+              Cloud.uploadFile(file, 'videos').then(function (uploaded) {
+                var vi = qs('#me-vi'); if (vi) { vi.src = uploaded.url; vi.style.display = 'block'; vi.dataset.newurl = uploaded.url; vi.dataset.newkey = uploaded.key; delete vi.dataset.newsrc; }
+              }).catch(function () {
+                var frFallback = new FileReader();
+                frFallback.onload = function (ev) { var vi = qs('#me-vi'); if (vi) { vi.src = ev.target.result; vi.style.display = 'block'; vi.dataset.newsrc = ev.target.result; delete vi.dataset.newurl; delete vi.dataset.newkey; } };
+                frFallback.readAsDataURL(file);
+              });
+            } else {
+              var fr = new FileReader();
+              fr.onload = function (ev) { var vi = qs('#me-vi'); if (vi) { vi.src = ev.target.result; vi.style.display = 'block'; vi.dataset.newsrc = ev.target.result; } };
+              fr.readAsDataURL(file);
+            }
           };
         }
         var eu = qs('#me-enter-univ');
@@ -3239,8 +3708,8 @@
           var ct = qs('#me-ct'); if (ct) upd.content = ct.value;
           var dt = qs('#me-dt'); if (dt && dt.value) upd.date = new Date(dt.value).toISOString();
           var ul = qs('#me-ul'); if (ul && ul.value) upd.unlockDate = new Date(ul.value).toISOString();
-          var pi = qs('#me-pi'); if (pi && pi.dataset.newsrc) upd.imageBase64 = pi.dataset.newsrc;
-          var vi = qs('#me-vi'); if (vi && vi.dataset.newsrc) upd.videoBase64 = vi.dataset.newsrc;
+          var pi = qs('#me-pi'); if (pi && pi.dataset.newsrc) { upd.imageBase64 = pi.dataset.newsrc; upd.imageUrl = ''; upd.imageKey = ''; } else if (pi && pi.dataset.newurl) { upd.imageUrl = pi.dataset.newurl; upd.imageKey = pi.dataset.newkey || ''; upd.imageBase64 = ''; }
+          var vi = qs('#me-vi'); if (vi && vi.dataset.newsrc) { upd.videoBase64 = vi.dataset.newsrc; upd.videoUrl = ''; upd.videoKey = ''; } else if (vi && vi.dataset.newurl) { upd.videoUrl = vi.dataset.newurl; upd.videoKey = vi.dataset.newkey || ''; upd.videoBase64 = ''; }
           App.updateNode(nodeId, upd);
           Object.assign(node, upd);
           Canvas.addNodeEl(node); Canvas.drawConnections(); Canvas.drawMinimap();
@@ -3318,9 +3787,29 @@
     (async function boot() {
       try {
         await Store.init();
-        App.user = await Store.getUser();
-        if (App.user) {
+        if (Cloud.isConfigured()) {
+          await Cloud.init();
+          var cloudUser = await Cloud.waitForAuth();
+          App.user = Cloud.normalizeUser(cloudUser);
+          if (App.user) {
+            App.universes = await Cloud.getUniverses(App.user.id).catch(async function () {
+              return await Store.getUniverses(App.user.id);
+            });
+            var imported = await App.importLegacyUniversesForCloudUser(App.user, App.universes);
+            App.universes = imported.universes;
+            await Store.setUser(App.user);
+            await Store.setUniverses(App.user.id, App.universes);
+            if (imported.importedCount) {
+              await Cloud.setUniverses(App.user.id, App.universes).catch(function (e) { console.warn('Cloud sync failed', e); });
+              alert('Imported ' + imported.importedCount + ' local universe' + (imported.importedCount > 1 ? 's' : '') + ' into your cloud account.');
+            }
+          }
+        }
+        if (!App.user) App.user = await Store.getUser();
+        if (App.user && !App.universes.length) {
           App.universes = await Store.getUniverses(App.user.id);
+        }
+        if (App.user) {
           Pages.dashboard({});
         } else {
           Pages.landing({});

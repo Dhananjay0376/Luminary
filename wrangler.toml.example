@@ -1,0 +1,10 @@
+name = "luminary-r2-worker"
+main = "cloudflare-worker.js"
+compatibility_date = "2026-03-08"
+
+[[r2_buckets]]
+binding = "LUMINARY_BUCKET"
+bucket_name = "your-r2-bucket-name"
+
+[vars]
+R2_PUBLIC_HOST = "media.example.com"
