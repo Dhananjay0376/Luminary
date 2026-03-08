@@ -2288,6 +2288,20 @@
         }).then(function (res) {
           return res;
         });
+      },
+      deleteFile: function (key) {
+        if (!this.canUploadMedia() || !key) return Promise.resolve();
+        return this.getIdToken().then(function (token) {
+          return fetch((Config.cloudflare.workerBaseUrl || '').replace(/\/$/, '') + '/media/' + encodeURIComponent(key), {
+            method: 'DELETE',
+            headers: {
+              'authorization': 'Bearer ' + token
+            }
+          });
+        }).then(function (res) {
+          if (!res.ok) throw new Error('Delete failed');
+          return res.json();
+        });
       }
     };
 
@@ -2297,6 +2311,11 @@
       if (kind === 'audio') return node.audioUrl || node.audioBase64 || '';
       if (kind === 'video') return node.videoUrl || node.videoBase64 || '';
       return '';
+    }
+
+    function mediaKeys(node) {
+      if (!node) return [];
+      return [node.imageKey, node.audioKey, node.videoKey].filter(Boolean);
     }
 
     // ============================================================
@@ -2374,6 +2393,12 @@
         if (typeof Modal !== 'undefined') Modal._bioOpen = false;
         Canvas.buildWorld();
         Canvas.applyTransform();
+      },
+      cleanupNodeMedia: function (node) {
+        if (!node || !Cloud.canUploadMedia() || !this.user || this.user.provider !== 'firebase') return;
+        mediaKeys(node).forEach(function (key) {
+          Cloud.deleteFile(key).catch(function (err) { console.warn('Media delete failed', err); });
+        });
       },
       importLegacyUniversesForCloudUser: async function (user, currentUniverses) {
         if (!user || !user.email) return { universes: currentUniverses || [], importedCount: 0 };
@@ -2461,8 +2486,10 @@
       },
       deleteNode: function (id) {
         var u = this.universe; if (!u) return;
+        var node = u.nodes.find(function (n) { return n.id === id; });
         u.nodes = u.nodes.filter(function (n) { return n.id !== id });
         u.connections = u.connections.filter(function (c) { return c.from !== id && c.to !== id });
+        this.cleanupNodeMedia(node);
         this.save();
       },
       addConn: function (conn, opts) {
@@ -2714,6 +2741,7 @@
           qs('.udel', card).onclick = function (e) {
             e.stopPropagation();
             if (confirm('Delete "' + u.personName + '"\'s universe? This cannot be undone.')) {
+              (u.nodes || []).forEach(function (n) { App.cleanupNodeMedia(n); });
               App.universes = App.universes.filter(function (x) { return x.id !== u.id });
               if (Cloud.isConfigured() && App.user && App.user.provider === 'firebase') {
                 Cloud.deleteUniverse(App.user.id, u.id).catch(function (err) { console.warn('Cloud delete failed', err); });
@@ -3805,12 +3833,16 @@
 
         qs('#me-sv').onclick = function () {
           var upd = { title: (qs('#me-ti').value || '').trim() || node.title };
+          var oldImageKey = node.imageKey || '';
+          var oldVideoKey = node.videoKey || '';
           var ct = qs('#me-ct'); if (ct) upd.content = ct.value;
           var dt = qs('#me-dt'); if (dt && dt.value) upd.date = new Date(dt.value).toISOString();
           var ul = qs('#me-ul'); if (ul && ul.value) upd.unlockDate = new Date(ul.value).toISOString();
           var pi = qs('#me-pi'); if (pi && pi.dataset.newsrc) { upd.imageBase64 = pi.dataset.newsrc; upd.imageUrl = ''; upd.imageKey = ''; } else if (pi && pi.dataset.newurl) { upd.imageUrl = pi.dataset.newurl; upd.imageKey = pi.dataset.newkey || ''; upd.imageBase64 = ''; }
           var vi = qs('#me-vi'); if (vi && vi.dataset.newsrc) { upd.videoBase64 = vi.dataset.newsrc; upd.videoUrl = ''; upd.videoKey = ''; } else if (vi && vi.dataset.newurl) { upd.videoUrl = vi.dataset.newurl; upd.videoKey = vi.dataset.newkey || ''; upd.videoBase64 = ''; }
           App.updateNode(nodeId, upd);
+          if (upd.imageKey && oldImageKey && upd.imageKey !== oldImageKey) Cloud.deleteFile(oldImageKey).catch(function (err) { console.warn('Old image delete failed', err); });
+          if (upd.videoKey && oldVideoKey && upd.videoKey !== oldVideoKey) Cloud.deleteFile(oldVideoKey).catch(function (err) { console.warn('Old video delete failed', err); });
           Object.assign(node, upd);
           Canvas.addNodeEl(node); Canvas.drawConnections(); Canvas.drawMinimap();
           close();

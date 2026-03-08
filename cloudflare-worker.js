@@ -72,6 +72,17 @@ export default {
       });
     }
 
+    if (request.method === 'DELETE' && url.pathname.startsWith('/media/')) {
+      const auth = await requireFirebaseUser(request, env);
+      if (!auth.ok) return json({ error: auth.error }, auth.status, origin);
+
+      const key = decodeURIComponent(url.pathname.replace('/media/', ''));
+      if (!key) return json({ error: 'Missing media key' }, 400, origin);
+
+      await env.LUMINARY_BUCKET.delete(key);
+      return json({ ok: true, key: key }, 200, origin);
+    }
+
     return json({ error: 'Not found' }, 404, origin);
   }
 };
