@@ -2015,10 +2015,14 @@
     // ============================================================
     var App = {
       page: 'landing', user: null, universes: [], activeId: null,
+      historyLimit: 80,
+      _history: {},
+      _restoringHistory: false,
       _evs: [],
       on: function (el, type, fn) { el.addEventListener(type, fn); this._evs.push({ el: el, type: type, fn: fn }) },
       offAll: function () { this._evs.forEach(function (e) { e.el.removeEventListener(e.type, e.fn) }); this._evs = [] },
       navigate: function (page, params) {
+        this.page = page;
         this.offAll();
         Canvas.destroy();
         if (params && params.id) this.activeId = params.id;
@@ -2026,13 +2030,86 @@
         Pages[page](params || {});
       },
       get universe() { return this.universes.find(function (u) { return u.id === App.activeId }) },
-      save: function () { if (this.user) Store.setUniverses(this.user.id, this.universes) },
+      cloneData: function (data) { return data == null ? data : JSON.parse(JSON.stringify(data)); },
+      ensureHistory: function () {
+        if (!this.activeId) return null;
+        if (!this._history[this.activeId]) {
+          this._history[this.activeId] = { undo: [], redo: [], current: this.cloneData(this.universe) };
+        } else if (!this._history[this.activeId].current && this.universe) {
+          this._history[this.activeId].current = this.cloneData(this.universe);
+        }
+        return this._history[this.activeId];
+      },
+      commitHistorySnapshot: function () {
+        var entry = this.ensureHistory();
+        var u = this.universe;
+        if (!entry || !u || this._restoringHistory) return;
+        var next = this.cloneData(u);
+        var prevStr = JSON.stringify(entry.current || null);
+        var nextStr = JSON.stringify(next);
+        if (prevStr === nextStr) return;
+        if (entry.current) entry.undo.push(entry.current);
+        if (entry.undo.length > this.historyLimit) entry.undo.shift();
+        entry.current = next;
+        entry.redo = [];
+      },
+      refreshCanvasState: function () {
+        if (!Canvas.world) return;
+        Canvas.selId = null;
+        Canvas.selectedConnId = null;
+        Canvas.drawing = false;
+        Canvas.drawFrom = null;
+        var panel = qs('#biopanel');
+        if (panel) panel.classList.remove('open');
+        if (typeof Modal !== 'undefined') Modal._bioOpen = false;
+        Canvas.buildWorld();
+        Canvas.applyTransform();
+      },
+      save: function () {
+        if (!this.user) return;
+        this.commitHistorySnapshot();
+        Store.setUniverses(this.user.id, this.universes);
+      },
+      undo: function () {
+        var entry = this.ensureHistory();
+        if (!entry || !entry.undo.length || !this.universe) return;
+        entry.redo.push(this.cloneData(this.universe));
+        var prev = entry.undo.pop();
+        entry.current = this.cloneData(prev);
+        var idx = this.universes.findIndex(function (u) { return u.id === App.activeId; });
+        if (idx === -1) return;
+        this._restoringHistory = true;
+        this.universes[idx] = this.cloneData(prev);
+        this._restoringHistory = false;
+        Store.setUniverses(this.user.id, this.universes);
+        this.refreshCanvasState();
+        Canvas.flashSave();
+      },
+      redo: function () {
+        var entry = this.ensureHistory();
+        if (!entry || !entry.redo.length || !this.universe) return;
+        entry.undo.push(this.cloneData(this.universe));
+        var next = entry.redo.pop();
+        entry.current = this.cloneData(next);
+        var idx = this.universes.findIndex(function (u) { return u.id === App.activeId; });
+        if (idx === -1) return;
+        this._restoringHistory = true;
+        this.universes[idx] = this.cloneData(next);
+        this._restoringHistory = false;
+        Store.setUniverses(this.user.id, this.universes);
+        this.refreshCanvasState();
+        Canvas.flashSave();
+      },
       updateUniverse: function (upd) {
         var u = this.universe; if (!u) return;
         Object.assign(u, upd, { modified: new Date().toISOString() });
         this.save(); Canvas.flashSave();
       },
-      addNode: function (node) { var u = this.universe; if (!u) return; u.nodes.push(node); this.save() },
+      addNode: function (node, opts) {
+        var u = this.universe; if (!u) return;
+        u.nodes.push(node);
+        if (!opts || !opts.deferSave) this.save();
+      },
       updateNode: function (id, upd) {
         var u = this.universe; if (!u) return;
         var n = u.nodes.find(function (n) { return n.id === id });
@@ -2045,7 +2122,11 @@
         u.connections = u.connections.filter(function (c) { return c.from !== id && c.to !== id });
         this.save();
       },
-      addConn: function (conn) { var u = this.universe; if (!u) return; u.connections.push(conn); this.save() }
+      addConn: function (conn, opts) {
+        var u = this.universe; if (!u) return;
+        u.connections.push(conn);
+        if (!opts || !opts.deferSave) this.save();
+      }
     };
 
     // ============================================================
@@ -2271,6 +2352,7 @@
       qs('#tb-pers').onclick = function () { Modal.bioPanel(); };
       qs('#tb-bio').onclick = function () { Modal.bioPanel(); };
       qs('#tb-stats').onclick = function () { Modal.stats(); };
+      App.ensureHistory();
       Canvas.init();
     };
 
@@ -2689,6 +2771,8 @@
 
         App.on(document, 'keydown', function (e) {
           if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+          if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.code === 'KeyZ') { e.preventDefault(); App.undo(); return; }
+          if ((e.metaKey || e.ctrlKey) && (e.code === 'KeyY' || (e.shiftKey && e.code === 'KeyZ'))) { e.preventDefault(); App.redo(); return; }
           if (e.code === 'Space') { spaceDown = true; vp.style.cursor = 'grab'; e.preventDefault(); }
           if (e.code === 'KeyH') self.resetView();
           if (e.code === 'KeyN') self.setTool('note');
@@ -2696,6 +2780,13 @@
           if (e.code === 'KeyV') self.setTool('voice');
           if (e.code === 'KeyC') self.setTool('connect');
           if (e.code === 'Escape') { self.drawing = false; self.drawFrom = null; var line = qs('#lpv-line'); if (line) line.style.display = 'none'; self.selectNode(null); self.selectedConnId = null; self.setTool('select'); self.drawConnections(); }
+          if ((e.code === 'Delete' || e.code === 'Backspace') && self.selectedConnId) {
+            var uu = App.universe; if (!uu) return;
+            uu.connections = uu.connections.filter(function (c) { return c.id !== self.selectedConnId; });
+            self.selectedConnId = null;
+            App.save(); self.drawConnections(); self.drawMinimap(); self.flashSave();
+            return;
+          }
           if ((e.code === 'Delete' || e.code === 'Backspace') && self.selId) {
             if (confirm('Delete this memory?')) { var id = self.selId; App.deleteNode(id); var el2 = qs('#nd-' + id); if (el2) el2.remove(); self.selectNode(null); self.drawConnections(); self.drawMinimap(); }
           }
@@ -2872,7 +2963,7 @@
 
       addNote: function (pos) {
         var node = { id: uid(), type: 'note', title: 'New Note', content: '', date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } };
-        App.addNode(node);
+        App.addNode(node, { deferSave: true });
         App.addConn({ id: uid(), from: 'person', to: node.id, color: '#C8934A' });
         this.addNodeEl(node); this.drawConnections(); this.drawMinimap();
         var self = this; setTimeout(function () { Modal.nodeEditor(node.id); }, 50);
@@ -2885,7 +2976,7 @@
           if (!e.target.files[0]) return;
           compressImage(e.target.files[0], function (b64) {
             var node = { id: uid(), type: 'photo', title: 'Photo Memory', content: '', imageBase64: b64, date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } };
-            App.addNode(node); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#C4667A' });
+            App.addNode(node, { deferSave: true }); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#C4667A' });
             self.addNodeEl(node); self.drawConnections(); self.drawMinimap();
             setTimeout(function () { Modal.nodeEditor(node.id); }, 50);
           });
@@ -2910,7 +3001,7 @@
             fr.onload = function (ev) {
               var secs = Math.round((Date.now() - recStart) / 1000);
               var node = { id: uid(), type: 'voice', title: 'Voice Memo', content: '', audioBase64: ev.target.result, duration: secs, date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } };
-              App.addNode(node); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#5A8A6A' });
+              App.addNode(node, { deferSave: true }); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#5A8A6A' });
               self.addNodeEl(node); self.drawConnections(); self.drawMinimap();
               var rh = qs('#rchud'); if (rh) rh.style.display = 'none';
               clearInterval(self.recInt);
@@ -2938,7 +3029,7 @@
             var fr = new FileReader();
             fr.onload = function (ev) {
               var node = { id: uid(), type: 'voice', title: 'Voice Memo', content: '', audioBase64: ev.target.result, duration: secs, date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } };
-              App.addNode(node); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#5A8A6A' });
+              App.addNode(node, { deferSave: true }); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#5A8A6A' });
               self.addNodeEl(node); self.drawConnections(); self.drawMinimap();
               setTimeout(function () { Modal.nodeEditor(node.id); }, 50);
             };
@@ -2948,7 +3039,7 @@
             var fr = new FileReader();
             fr.onload = function (ev) {
               var node = { id: uid(), type: 'voice', title: 'Voice Memo', content: '', audioBase64: ev.target.result, duration: 0, date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } };
-              App.addNode(node); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#5A8A6A' });
+              App.addNode(node, { deferSave: true }); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#5A8A6A' });
               self.addNodeEl(node); self.drawConnections(); self.drawMinimap();
               setTimeout(function () { Modal.nodeEditor(node.id); }, 50);
             };
@@ -2966,7 +3057,7 @@
           var fr = new FileReader();
           fr.onload = function (ev) {
             var node = { id: uid(), type: 'video', title: 'Video Memory', content: '', videoBase64: ev.target.result, date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } };
-            App.addNode(node); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#4A82C4' });
+            App.addNode(node, { deferSave: true }); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#4A82C4' });
             self.addNodeEl(node); self.drawConnections(); self.drawMinimap();
             setTimeout(function () { Modal.nodeEditor(node.id); }, 50);
           };
@@ -2980,7 +3071,7 @@
         var newId = uid();
         var node = { id: uid(), type: 'universe', title: 'Memory Universe', content: 'A distinct universe for this memory.', targetUniverseId: newId, date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } };
         App.universes.push({ id: newId, personName: u.personName, relationship: u.relationship, personImageBase64: u.personImageBase64, personBio: '', howWeMet: '', loveLetter: '', createdAt: new Date().toISOString(), modified: new Date().toISOString(), nodes: [], connections: [] });
-        App.addNode(node); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#9A6AC4' });
+        App.addNode(node, { deferSave: true }); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#9A6AC4' });
         this.addNodeEl(node); this.drawConnections(); this.drawMinimap();
       },
 
@@ -3104,7 +3195,7 @@
           var ti = (qs('#cap-ti').value || '').trim(); var dt = qs('#cap-dt').value;
           if (!ti || !dt) { qs('#cap-ti').style.borderColor = ti ? '' : 'var(--rose)'; qs('#cap-dt').style.borderColor = dt ? '' : 'var(--rose)'; return; }
           var node = { id: uid(), type: 'capsule', title: ti, content: qs('#cap-msg').value, unlockDate: new Date(dt).toISOString(), date: new Date().toISOString(), pos: pos };
-          App.addNode(node); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#C49A4A' });
+          App.addNode(node, { deferSave: true }); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#C49A4A' });
           Canvas.addNodeEl(node); Canvas.drawConnections(); Canvas.drawMinimap(); close();
         };
         setTimeout(function () { qs('#cap-ti').focus(); }, 60);
