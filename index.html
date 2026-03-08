@@ -661,6 +661,18 @@
       border-color: rgba(255, 255, 255, .28)
     }
 
+    .aforgot {
+      display: inline-block;
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--gold);
+      cursor: pointer
+    }
+
+    .aforgot:hover {
+      color: #E8B068
+    }
+
     /* DASHBOARD */
     #dashboard {
       position: absolute;
@@ -2179,6 +2191,11 @@
           });
         });
       },
+      sendPasswordReset: function (email) {
+        return this.init().then(function () {
+          return firebase.auth().sendPasswordResetEmail(email);
+        });
+      },
       logout: function () {
         return this.init().then(function () { return firebase.auth().signOut(); });
       },
@@ -2545,18 +2562,41 @@
       qs('#tab-l').classList.toggle('active', mode === 'login');
       qs('#tab-s').classList.toggle('active', mode === 'signup');
 
+      function showAuthError(e, fallback) {
+        console.warn(e);
+        var code = e && e.code ? e.code : '';
+        var msg = fallback || 'Unable to continue.';
+        if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found' || code === 'auth/invalid-login-credentials') msg = 'Invalid email or password.';
+        else if (code === 'auth/email-already-in-use') msg = 'Email already registered.';
+        else if (code === 'auth/popup-closed-by-user') msg = 'Google sign-in popup was closed.';
+        else if (code === 'auth/popup-blocked') msg = 'Popup was blocked by the browser.';
+        else if (code === 'auth/unauthorized-domain') msg = 'This domain is not authorized in Firebase Authentication.';
+        else if (code === 'permission-denied' || code === 'firestore/permission-denied') msg = 'Signed in, but Firestore access was denied. Check your Firestore rules.';
+        else if (code === 'failed-precondition' || code === 'firestore/failed-precondition') msg = 'Firestore is not ready yet. Create the database and publish rules.';
+        else if (e && e.message) msg = e.message;
+        err.textContent = msg;
+        err.classList.add('show');
+      }
+
       function renderForm() {
         var f = qs('#aform');
         var googleBtn = Cloud.isConfigured()
           ? '<div class="aor">or</div><button class="asubmit agoogle" id="agoogle">' + (curMode === 'login' ? 'Continue with Google' : 'Sign up with Google') + '</button>'
           : '';
+        var forgotBtn = Cloud.isConfigured() && curMode === 'login'
+          ? '<span class="aforgot" id="aforgot">Forgot password?</span>'
+          : '';
         f.innerHTML = curMode === 'login'
-          ? '<div class="field"><label>Email</label><input id="f-em" type="email" placeholder="you@example.com" autocomplete="email"></div><div class="field"><label>Password</label><input id="f-pw" type="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password"></div><button class="asubmit" id="asubmit">Sign In &rarr;</button>' + googleBtn + '<p style="text-align:center;margin-top:14px;font-size:12px;color:var(--tm)">No account? <span style="color:var(--gold);cursor:pointer" id="sw">Create one free</span></p>'
-          : '<div class="field"><label>Your Name</label><input id="f-nm" type="text" placeholder="Your full name" autocomplete="name"></div><div class="field"><label>Email</label><input id="f-em" type="email" placeholder="you@example.com" autocomplete="email"></div><div class="field"><label>Password</label><input id="f-pw" type="password" placeholder="At least 6 characters" autocomplete="new-password"></div><button class="asubmit" id="asubmit">Create Account &rarr;</button>' + googleBtn + '<p style="text-align:center;margin-top:14px;font-size:12px;color:var(--tm)">Already have one? <span style="color:var(--gold);cursor:pointer" id="sw">Sign in</span></p>';
+          ? '<form id="auth-form"><div class="field"><label>Email</label><input id="f-em" type="email" placeholder="you@example.com" autocomplete="email"></div><div class="field"><label>Password</label><input id="f-pw" type="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password"></div><button class="asubmit" id="asubmit" type="submit">Sign In &rarr;</button>' + googleBtn + forgotBtn + '</form><p style="text-align:center;margin-top:14px;font-size:12px;color:var(--tm)">No account? <span style="color:var(--gold);cursor:pointer" id="sw">Create one free</span></p>'
+          : '<form id="auth-form"><div class="field"><label>Your Name</label><input id="f-nm" type="text" placeholder="Your full name" autocomplete="name"></div><div class="field"><label>Email</label><input id="f-em" type="email" placeholder="you@example.com" autocomplete="email"></div><div class="field"><label>Password</label><input id="f-pw" type="password" placeholder="At least 6 characters" autocomplete="new-password"></div><button class="asubmit" id="asubmit" type="submit">Create Account &rarr;</button>' + googleBtn + '</form><p style="text-align:center;margin-top:14px;font-size:12px;color:var(--tm)">Already have one? <span style="color:var(--gold);cursor:pointer" id="sw">Sign in</span></p>';
         err.classList.remove('show');
-        qs('#asubmit').onclick = submit;
+        var form = qs('#auth-form');
+        if (form) form.onsubmit = function (e) { e.preventDefault(); submit(); };
+        qs('#asubmit').onclick = function (e) { e.preventDefault(); submit(); };
         var g = qs('#agoogle');
-        if (g) g.onclick = googleSubmit;
+        if (g) g.onclick = function (e) { e.preventDefault(); googleSubmit(); };
+        var forgot = qs('#aforgot');
+        if (forgot) forgot.onclick = function () { forgotPassword(); };
         qs('#sw').onclick = function () { curMode = curMode === 'login' ? 'signup' : 'login'; qs('#tab-l').classList.toggle('active', curMode === 'login'); qs('#tab-s').classList.toggle('active', curMode === 'signup'); renderForm(); };
         qs('#f-pw').onkeydown = function (e) { if (e.key === 'Enter') submit(); };
         setTimeout(function () { qs('#f-em').focus(); }, 80);
@@ -2577,9 +2617,24 @@
           }
           App.navigate('dashboard', {});
         } catch (e) {
-          console.warn(e);
-          err.textContent = 'Unable to sign in with Google.';
+          showAuthError(e, 'Unable to sign in with Google.');
+        }
+      }
+
+      async function forgotPassword() {
+        err.classList.remove('show');
+        var email = (qs('#f-em').value || '').trim().toLowerCase();
+        if (!email || !email.includes('@')) {
+          err.textContent = 'Enter your email first, then tap Forgot password.';
           err.classList.add('show');
+          return;
+        }
+        try {
+          await Cloud.sendPasswordReset(email);
+          err.textContent = 'Password reset email sent. Check your inbox.';
+          err.classList.add('show');
+        } catch (e) {
+          showAuthError(e, 'Unable to send password reset email.');
         }
       }
 
@@ -2627,9 +2682,7 @@
           }
           App.navigate('dashboard', {});
         } catch (e) {
-          console.warn(e);
-          err.textContent = Cloud.isConfigured() ? 'Unable to sign in with Firebase.' : 'Unable to access local database.';
-          err.classList.add('show');
+          showAuthError(e, Cloud.isConfigured() ? 'Unable to sign in with Firebase.' : 'Unable to access local database.');
         }
       }
 
