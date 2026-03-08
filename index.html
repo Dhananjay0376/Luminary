@@ -2969,17 +2969,111 @@
         var self = this; setTimeout(function () { Modal.nodeEditor(node.id); }, 50);
       },
 
-      addPhoto: function (pos) {
-        var inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*';
+      batchPos: function (pos, idx) {
+        return { x: pos.x + (idx % 3) * 34, y: pos.y + Math.floor(idx / 3) * 34 };
+      },
+
+      fileTitle: function (file, fallback) {
+        var name = file && file.name ? file.name.replace(/\.[^/.]+$/, '') : '';
+        return name || fallback;
+      },
+
+      createPhotoNodeFromFile: function (file, pos) {
         var self = this;
-        inp.onchange = function (e) {
-          if (!e.target.files[0]) return;
-          compressImage(e.target.files[0], function (b64) {
-            var node = { id: uid(), type: 'photo', title: 'Photo Memory', content: '', imageBase64: b64, date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } };
-            App.addNode(node, { deferSave: true }); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#C4667A' });
-            self.addNodeEl(node); self.drawConnections(); self.drawMinimap();
-            setTimeout(function () { Modal.nodeEditor(node.id); }, 50);
+        return new Promise(function (resolve) {
+          compressImage(file, function (b64) {
+            resolve({
+              id: uid(),
+              type: 'photo',
+              title: self.fileTitle(file, 'Photo Memory'),
+              content: '',
+              imageBase64: b64,
+              date: new Date().toISOString(),
+              pos: pos
+            });
           });
+        });
+      },
+
+      createVoiceNodeFromFile: function (file, pos) {
+        var self = this;
+        return new Promise(function (resolve) {
+          var done = false;
+          function finish(audioBase64, secs) {
+            if (done) return;
+            done = true;
+            resolve({
+              id: uid(),
+              type: 'voice',
+              title: self.fileTitle(file, 'Voice Memo'),
+              content: '',
+              audioBase64: audioBase64,
+              duration: secs || 0,
+              date: new Date().toISOString(),
+              pos: pos
+            });
+          }
+          var fr = new FileReader();
+          fr.onload = function (ev) { finish(ev.target.result, 0); };
+          var url = URL.createObjectURL(file);
+          var au = new Audio(url);
+          au.onloadedmetadata = function () {
+            var secs = Math.round(au.duration || 0);
+            var fr2 = new FileReader();
+            fr2.onload = function (ev) { finish(ev.target.result, secs); URL.revokeObjectURL(url); };
+            fr2.readAsDataURL(file);
+          };
+          au.onerror = function () {
+            URL.revokeObjectURL(url);
+            fr.readAsDataURL(file);
+          };
+        });
+      },
+
+      createVideoNodeFromFile: function (file, pos) {
+        var self = this;
+        return new Promise(function (resolve) {
+          var fr = new FileReader();
+          fr.onload = function (ev) {
+            resolve({
+              id: uid(),
+              type: 'video',
+              title: self.fileTitle(file, 'Video Memory'),
+              content: '',
+              videoBase64: ev.target.result,
+              date: new Date().toISOString(),
+              pos: pos
+            });
+          };
+          fr.readAsDataURL(file);
+        });
+      },
+
+      addMediaBatch: async function (files, pos, maker, color, openEditor) {
+        var self = this;
+        var created = [];
+        for (var i = 0; i < files.length; i++) {
+          var node = await maker.call(this, files[i], this.batchPos(pos, i));
+          App.addNode(node, { deferSave: true });
+          App.addConn({ id: uid(), from: 'person', to: node.id, color: color }, { deferSave: true });
+          self.addNodeEl(node);
+          created.push(node);
+        }
+        if (created.length) {
+          App.save();
+          self.drawConnections();
+          self.drawMinimap();
+          if (openEditor && created.length === 1) setTimeout(function () { Modal.nodeEditor(created[0].id); }, 50);
+        }
+      },
+
+      addPhoto: function (pos) {
+        var inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*'; inp.multiple = true;
+        var self = this;
+        inp.onchange = async function (e) {
+          var files = Array.prototype.slice.call(e.target.files || []);
+          if (!files.length) return;
+          await self.addMediaBatch(files, pos, self.createPhotoNodeFromFile, '#C4667A', true);
         };
         inp.click();
       },
@@ -3017,51 +3111,23 @@
       },
 
       startVoiceUpload: function (pos) {
-        var inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'audio/*';
+        var inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'audio/*'; inp.multiple = true;
         var self = this;
-        inp.onchange = function (e) {
-          if (!e.target.files[0]) return;
-          var file = e.target.files[0];
-          var url = URL.createObjectURL(file);
-          var au = new Audio(url);
-          au.onloadedmetadata = function () {
-            var secs = Math.round(au.duration || 0);
-            var fr = new FileReader();
-            fr.onload = function (ev) {
-              var node = { id: uid(), type: 'voice', title: 'Voice Memo', content: '', audioBase64: ev.target.result, duration: secs, date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } };
-              App.addNode(node, { deferSave: true }); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#5A8A6A' });
-              self.addNodeEl(node); self.drawConnections(); self.drawMinimap();
-              setTimeout(function () { Modal.nodeEditor(node.id); }, 50);
-            };
-            fr.readAsDataURL(file);
-          };
-          au.onerror = function () {
-            var fr = new FileReader();
-            fr.onload = function (ev) {
-              var node = { id: uid(), type: 'voice', title: 'Voice Memo', content: '', audioBase64: ev.target.result, duration: 0, date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } };
-              App.addNode(node, { deferSave: true }); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#5A8A6A' });
-              self.addNodeEl(node); self.drawConnections(); self.drawMinimap();
-              setTimeout(function () { Modal.nodeEditor(node.id); }, 50);
-            };
-            fr.readAsDataURL(file);
-          }
+        inp.onchange = async function (e) {
+          var files = Array.prototype.slice.call(e.target.files || []);
+          if (!files.length) return;
+          await self.addMediaBatch(files, pos, self.createVoiceNodeFromFile, '#5A8A6A', true);
         };
         inp.click();
       },
 
       addVideo: function (pos) {
-        var inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'video/*';
+        var inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'video/*'; inp.multiple = true;
         var self = this;
-        inp.onchange = function (e) {
-          if (!e.target.files[0]) return;
-          var fr = new FileReader();
-          fr.onload = function (ev) {
-            var node = { id: uid(), type: 'video', title: 'Video Memory', content: '', videoBase64: ev.target.result, date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } };
-            App.addNode(node, { deferSave: true }); App.addConn({ id: uid(), from: 'person', to: node.id, color: '#4A82C4' });
-            self.addNodeEl(node); self.drawConnections(); self.drawMinimap();
-            setTimeout(function () { Modal.nodeEditor(node.id); }, 50);
-          };
-          fr.readAsDataURL(e.target.files[0]);
+        inp.onchange = async function (e) {
+          var files = Array.prototype.slice.call(e.target.files || []);
+          if (!files.length) return;
+          await self.addMediaBatch(files, pos, self.createVideoNodeFromFile, '#4A82C4', true);
         };
         inp.click();
       },
