@@ -3543,9 +3543,9 @@
                   date: new Date().toISOString(),
                   pos: pos
                 });
-              }).catch(function () {
+              }).catch(function (err) {
                 URL.revokeObjectURL(url);
-                Cloud.reportMediaFailure('Audio', new Error('Cloud upload failed'));
+                Cloud.reportMediaFailure('Audio', err);
                 resolve(null);
               });
             };
@@ -3587,8 +3587,8 @@
               date: new Date().toISOString(),
               pos: pos
             };
-          }).catch(function () {
-            Cloud.reportMediaFailure('Video', new Error('Cloud upload failed'));
+          }).catch(function (err) {
+            Cloud.reportMediaFailure('Video', err);
             return null;
           });
         }
@@ -3665,8 +3665,8 @@
               var recFile = new File([blob], 'voice-' + Date.now() + '.webm', { type: blob.type || 'audio/webm' });
               Cloud.uploadFile(recFile, 'audio').then(function (uploaded) {
                 finishNode({ id: uid(), type: 'voice', title: 'Voice Memo', content: '', audioUrl: uploaded.url, audioKey: uploaded.key, duration: secs, date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } });
-              }).catch(function () {
-                Cloud.reportMediaFailure('Recorded audio', new Error('Cloud upload failed'));
+              }).catch(function (err) {
+                Cloud.reportMediaFailure('Recorded audio', err);
                 var rh2 = qs('#rchud'); if (rh2) rh2.style.display = 'none';
                 clearInterval(self.recInt);
               });

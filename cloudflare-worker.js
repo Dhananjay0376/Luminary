@@ -146,13 +146,13 @@ async function verifyFirebaseToken(token, projectId) {
   if (payload.exp && payload.exp < now) throw new Error('Token expired');
   if (payload.iat && payload.iat > now + 300) throw new Error('Token issued in the future');
 
-  const certs = await getFirebaseCerts();
-  const pem = certs[header.kid];
-  if (!pem) throw new Error('Unknown token signing key');
+  const keys = await getFirebaseKeys();
+  const jwk = keys[header.kid];
+  if (!jwk) throw new Error('Unknown token signing key');
 
   const key = await crypto.subtle.importKey(
-    'spki',
-    pemToArrayBuffer(pem),
+    'jwk',
+    jwk,
     { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
     false,
     ['verify']
@@ -165,24 +165,28 @@ async function verifyFirebaseToken(token, projectId) {
   return payload;
 }
 
-let firebaseCertCache = { expiresAt: 0, certs: null };
+let firebaseKeyCache = { expiresAt: 0, keys: null };
 
-async function getFirebaseCerts() {
+async function getFirebaseKeys() {
   const now = Date.now();
-  if (firebaseCertCache.certs && firebaseCertCache.expiresAt > now) return firebaseCertCache.certs;
+  if (firebaseKeyCache.keys && firebaseKeyCache.expiresAt > now) return firebaseKeyCache.keys;
 
-  const res = await fetch('https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com');
-  if (!res.ok) throw new Error('Unable to fetch Firebase certs');
-  const certs = await res.json();
+  const res = await fetch('https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com');
+  if (!res.ok) throw new Error('Unable to fetch Firebase keys');
+  const body = await res.json();
+  const mapped = {};
+  (body.keys || []).forEach(function (key) {
+    if (key && key.kid) mapped[key.kid] = key;
+  });
 
   const cacheControl = res.headers.get('cache-control') || '';
   const match = cacheControl.match(/max-age=(\d+)/);
   const maxAgeMs = match ? parseInt(match[1], 10) * 1000 : 3600000;
-  firebaseCertCache = {
-    certs: certs,
+  firebaseKeyCache = {
+    keys: mapped,
     expiresAt: now + maxAgeMs
   };
-  return certs;
+  return mapped;
 }
 
 function decodeBase64Url(value) {
@@ -194,12 +198,4 @@ function base64UrlToUint8Array(value) {
   const bytes = new Uint8Array(decoded.length);
   for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i);
   return bytes;
-}
-
-function pemToArrayBuffer(pem) {
-  const base64 = pem.replace(/-----BEGIN CERTIFICATE-----/g, '').replace(/-----END CERTIFICATE-----/g, '').replace(/\s+/g, '');
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes.buffer;
 }
