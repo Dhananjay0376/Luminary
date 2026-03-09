@@ -2349,7 +2349,7 @@
             }
           });
         }).then(function (res) {
-          if (!res.ok) throw new Error('Delete failed');
+          if (!res.ok) return Cloud.parseApiError(res);
           return res.json();
         });
       }
@@ -2387,6 +2387,7 @@
       _storeSaveTimer: null,
       _cloudSaveTimer: null,
       _pendingMediaDeletes: {},
+      _knownUniverseMediaKeys: {},
       _evs: [],
       on: function (el, type, fn) { el.addEventListener(type, fn); this._evs.push({ el: el, type: type, fn: fn }) },
       offAll: function () { this._evs.forEach(function (e) { e.el.removeEventListener(e.type, e.fn) }); this._evs = [] },
@@ -2461,7 +2462,7 @@
           Cloud.deleteFile(key).catch(function (err) { console.warn('Media delete failed', err); }).finally(function () {
             delete self._pendingMediaDeletes[key];
           });
-        }, 30000);
+        }, 45000);
       },
       cancelPendingMediaDelete: function (key) {
         if (!key || !this._pendingMediaDeletes[key]) return;
@@ -2475,6 +2476,17 @@
         Object.keys(beforeKeys).forEach(function (key) {
           if (!afterKeys[key]) App.scheduleMediaDelete(key);
         });
+      },
+      reconcileCurrentUniverseMediaState: function () {
+        var universe = this.universe;
+        if (!universe) return;
+        var previousKeys = this._knownUniverseMediaKeys[universe.id] || {};
+        var currentKeys = universeMediaKeys(universe);
+        Object.keys(currentKeys).forEach(this.cancelPendingMediaDelete.bind(this));
+        Object.keys(previousKeys).forEach(function (key) {
+          if (!currentKeys[key]) App.scheduleMediaDelete(key);
+        });
+        this._knownUniverseMediaKeys[universe.id] = currentKeys;
       },
       cleanupNodeMedia: function (node) {
         if (!node || !Cloud.canUploadMedia() || !this.user || this.user.provider !== 'firebase') return;
@@ -2516,6 +2528,7 @@
       save: function () {
         if (!this.user) return;
         this.commitHistorySnapshot();
+        this.reconcileCurrentUniverseMediaState();
         this.queuePersistence();
       },
       undo: function () {
