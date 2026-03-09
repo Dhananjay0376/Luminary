@@ -2119,7 +2119,22 @@
       },
       reportMediaFailure: function (label, err) {
         console.warn(label + ' upload failed', err);
-        alert(label + ' upload failed before reaching cloud storage. The file was not kept locally to avoid browser memory crashes. Check the Worker deploy, auth token flow, and Network errors.');
+        var detail = err && err.message ? ' Details: ' + err.message : '';
+        alert(label + ' upload failed before reaching cloud storage. The file was not kept locally to avoid browser memory crashes.' + detail);
+      },
+      parseApiError: function (res) {
+        return res.text().then(function (text) {
+          var msg = 'HTTP ' + res.status;
+          if (text) {
+            try {
+              var json = JSON.parse(text);
+              msg += json && json.error ? ': ' + json.error : ': ' + text;
+            } catch (e) {
+              msg += ': ' + text;
+            }
+          }
+          throw new Error(msg);
+        });
       },
       init: function () {
         if (!this.isConfigured()) return Promise.resolve(null);
@@ -2264,7 +2279,7 @@
             body: JSON.stringify({ key: key, contentType: contentType })
           });
         }).then(function (res) {
-          if (!res.ok) throw new Error('Failed to create upload URL');
+          if (!res.ok) return Cloud.parseApiError(res);
           return res.json();
         });
       },
@@ -2284,7 +2299,7 @@
             },
             body: file
           }).then(function (res) {
-            if (!res.ok) throw new Error('Upload failed');
+            if (!res.ok) return self.parseApiError(res);
             return res.json();
           }).then(function (uploaded) {
             return { key: uploaded.key || key, url: uploaded.mediaUrl || info.mediaUrl };
