@@ -2117,6 +2117,10 @@
         }
         return false;
       },
+      reportMediaFailure: function (label, err) {
+        console.warn(label + ' upload failed', err);
+        alert(label + ' upload failed before reaching cloud storage. The file was not kept locally to avoid browser memory crashes. Check the Worker deploy, auth token flow, and Network errors.');
+      },
       init: function () {
         if (!this.isConfigured()) return Promise.resolve(null);
         if (this.initPromise) return this.initPromise;
@@ -2985,7 +2989,7 @@
           inner = '<div class="nc nc-photo" style="animation-duration:' + dur + ';animation-delay:' + delay + '">' + imgTag + '<div class="pstrip"><div class="ntype" style="color:var(--photo)">PHOTO</div><div class="ntitle">' + escH(node.title) + '</div><div class="ndate">' + fmtDate(node.date) + '</div></div></div>';
         } else if (node.type === 'video') {
           var vidSrc = mediaSrc(node, 'video');
-          var vidTag = vidSrc ? '<video src="' + vidSrc + '" class="pthumb" style="width:100%;height:100px;object-fit:cover;border-radius:12px;margin-bottom:12px" muted loop autoplay></video>' : '<div class="pthumb" style="background:var(--surf2);display:flex;align-items:center;justify-content:center;font-size:28px">&#128249;</div>';
+          var vidTag = vidSrc ? '<video src="' + vidSrc + '" class="pthumb" style="width:100%;height:100px;object-fit:cover;border-radius:12px;margin-bottom:12px" muted playsinline preload="metadata"></video>' : '<div class="pthumb" style="background:var(--surf2);display:flex;align-items:center;justify-content:center;font-size:28px">&#128249;</div>';
           inner = '<div class="nc nc-video" style="animation-duration:' + dur + ';animation-delay:' + delay + '">' + vidTag + '<div class="pstrip"><div class="ntype" style="color:var(--video)">VIDEO</div><div class="ntitle">' + escH(node.title) + '</div><div class="ndate">' + fmtDate(node.date) + '</div></div></div>';
         } else if (node.type === 'voice') {
           var bars = '';
@@ -3526,16 +3530,14 @@
                 });
               }).catch(function () {
                 URL.revokeObjectURL(url);
-                var frFallback = new FileReader();
-                frFallback.onload = function (ev) { finish(ev.target.result, secs); };
-                frFallback.readAsDataURL(file);
+                Cloud.reportMediaFailure('Audio', new Error('Cloud upload failed'));
+                resolve(null);
               });
             };
             au.onerror = function () {
               URL.revokeObjectURL(url);
-              var frCloudFallback = new FileReader();
-              frCloudFallback.onload = function (ev) { finish(ev.target.result, 0); };
-              frCloudFallback.readAsDataURL(file);
+              Cloud.reportMediaFailure('Audio', new Error('Audio metadata could not be read'));
+              resolve(null);
             };
             return;
           }
@@ -3571,21 +3573,8 @@
               pos: pos
             };
           }).catch(function () {
-            return new Promise(function (resolve) {
-              var frFallback = new FileReader();
-              frFallback.onload = function (ev) {
-                resolve({
-                  id: uid(),
-                  type: 'video',
-                  title: self.fileTitle(file, 'Video Memory'),
-                  content: '',
-                  videoBase64: ev.target.result,
-                  date: new Date().toISOString(),
-                  pos: pos
-                });
-              };
-              frFallback.readAsDataURL(file);
-            });
+            Cloud.reportMediaFailure('Video', new Error('Cloud upload failed'));
+            return null;
           });
         }
         return new Promise(function (resolve) {
@@ -3610,6 +3599,7 @@
         var created = [];
         for (var i = 0; i < files.length; i++) {
           var node = await maker.call(this, files[i], this.batchPos(pos, i));
+          if (!node) continue;
           App.addNode(node, { deferSave: true });
           App.addConn({ id: uid(), from: 'person', to: node.id, color: color }, { deferSave: true });
           self.addNodeEl(node);
@@ -3661,11 +3651,9 @@
               Cloud.uploadFile(recFile, 'audio').then(function (uploaded) {
                 finishNode({ id: uid(), type: 'voice', title: 'Voice Memo', content: '', audioUrl: uploaded.url, audioKey: uploaded.key, duration: secs, date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } });
               }).catch(function () {
-                var frFallback = new FileReader();
-                frFallback.onload = function (ev) {
-                  finishNode({ id: uid(), type: 'voice', title: 'Voice Memo', content: '', audioBase64: ev.target.result, duration: secs, date: new Date().toISOString(), pos: { x: pos.x, y: pos.y } });
-                };
-                frFallback.readAsDataURL(blob);
+                Cloud.reportMediaFailure('Recorded audio', new Error('Cloud upload failed'));
+                var rh2 = qs('#rchud'); if (rh2) rh2.style.display = 'none';
+                clearInterval(self.recInt);
               });
             } else {
               var fr = new FileReader();
