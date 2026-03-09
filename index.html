@@ -673,6 +673,25 @@
       color: #E8B068
     }
 
+    .srow {
+      display: flex;
+      align-items: center;
+      gap: 12px
+    }
+
+    .srow input[type="range"] {
+      flex: 1;
+      accent-color: var(--gold)
+    }
+
+    .sval {
+      min-width: 46px;
+      text-align: right;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--gold)
+    }
+
     /* DASHBOARD */
     #dashboard {
       position: absolute;
@@ -1304,7 +1323,8 @@
     .mnode {
       position: absolute;
       transform: translate(-50%, -50%);
-      cursor: pointer
+      cursor: pointer;
+      --ns: 1
     }
 
     .mnode:hover .nc {
@@ -1320,7 +1340,9 @@
       padding: 12px 14px;
       min-width: 130px;
       max-width: 190px;
-      animation: fy linear infinite
+      animation: fy linear infinite;
+      transform: scale(var(--ns));
+      transform-origin: center center
     }
 
     .nc-note {
@@ -2098,6 +2120,9 @@
       db: null,
       initPromise: null,
       warnedMissingMediaConfig: false,
+      maxImageBytes: 15 * 1024 * 1024,
+      maxAudioBytes: 25 * 1024 * 1024,
+      maxVideoBytes: 100 * 1024 * 1024,
       isConfigured: function () {
         var f = Config.firebase || {};
         return !!(window.firebase && f.apiKey && f.authDomain && f.projectId && f.appId);
@@ -2121,6 +2146,15 @@
         console.warn(label + ' upload failed', err);
         var detail = err && err.message ? ' Details: ' + err.message : '';
         alert(label + ' upload failed before reaching cloud storage. The file was not kept locally to avoid browser memory crashes.' + detail);
+      },
+      validateMediaFile: function (file, kind) {
+        if (!file) return false;
+        var limit = kind === 'image' ? this.maxImageBytes : kind === 'audio' ? this.maxAudioBytes : this.maxVideoBytes;
+        if (file.size > limit) {
+          alert(kind.charAt(0).toUpperCase() + kind.slice(1) + ' file "' + (file.name || 'media') + '" is too large for this app right now. Limit: ' + Math.round(limit / 1024 / 1024) + ' MB.');
+          return false;
+        }
+        return true;
       },
       parseApiError: function (res) {
         return res.text().then(function (text) {
@@ -2990,6 +3024,7 @@
         var wrap = mkEl('div', 'mnode');
         wrap.id = 'nd-' + node.id;
         wrap.style.left = node.pos.x + 'px'; wrap.style.top = node.pos.y + 'px';
+        wrap.style.setProperty('--ns', String(node.size || 1));
         if (this.selId === node.id) wrap.classList.add('sel');
 
         var dur = (3 + Math.random() * 3).toFixed(1) + 's';
@@ -3000,7 +3035,7 @@
           inner = '<div class="nc nc-note" style="animation-duration:' + dur + ';animation-delay:' + delay + '"><div class="ntype" style="color:var(--note)">NOTE</div><div class="ntitle">' + escH(node.title) + '</div>' + (node.content ? '<div class="nbody">' + escH(node.content) + '</div>' : '') + '<div class="ndate">' + fmtDate(node.date) + '</div></div>';
         } else if (node.type === 'photo') {
           var imgSrc = mediaSrc(node, 'image');
-          var imgTag = imgSrc ? '<img src="' + imgSrc + '" class="pthumb" alt="">' : '<div class="pthumb" style="background:var(--surf2);display:flex;align-items:center;justify-content:center;font-size:28px">&#128444;</div>';
+          var imgTag = imgSrc ? '<img src="' + imgSrc + '" class="pthumb" alt="" loading="lazy" decoding="async">' : '<div class="pthumb" style="background:var(--surf2);display:flex;align-items:center;justify-content:center;font-size:28px">&#128444;</div>';
           inner = '<div class="nc nc-photo" style="animation-duration:' + dur + ';animation-delay:' + delay + '">' + imgTag + '<div class="pstrip"><div class="ntype" style="color:var(--photo)">PHOTO</div><div class="ntitle">' + escH(node.title) + '</div><div class="ndate">' + fmtDate(node.date) + '</div></div></div>';
         } else if (node.type === 'video') {
           var vidSrc = mediaSrc(node, 'video');
@@ -3461,6 +3496,7 @@
       },
 
       createPhotoNodeFromFile: function (file, pos) {
+        if (!Cloud.validateMediaFile(file, 'image')) return Promise.resolve(null);
         var self = this;
         if (Cloud.canUploadMedia()) {
           return Cloud.uploadFile(file, 'photos').then(function (uploaded) {
@@ -3506,6 +3542,7 @@
       },
 
       createVoiceNodeFromFile: function (file, pos) {
+        if (!Cloud.validateMediaFile(file, 'audio')) return Promise.resolve(null);
         var self = this;
         return new Promise(function (resolve) {
           var done = false;
@@ -3574,6 +3611,7 @@
       },
 
       createVideoNodeFromFile: function (file, pos) {
+        if (!Cloud.validateMediaFile(file, 'video')) return Promise.resolve(null);
         var self = this;
         if (Cloud.canUploadMedia()) {
           return Cloud.uploadFile(file, 'videos').then(function (uploaded) {
@@ -3648,7 +3686,11 @@
         var self = this;
         navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
           self.recChunks = [];
-          self.recorder = new MediaRecorder(stream);
+          try {
+            self.recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 64000 });
+          } catch (e) {
+            self.recorder = new MediaRecorder(stream);
+          }
           self.recorder.ondataavailable = function (e) { self.recChunks.push(e.data); };
           var recStart = Date.now();
           self.recorder.onstop = function () {
@@ -3770,6 +3812,7 @@
         var typeColorMap = { note: 'var(--note)', photo: 'var(--photo)', voice: 'var(--voice)', capsule: 'var(--capsule)', video: 'var(--video)', universe: 'var(--universe)' };
         var bg = mkEl('div', 'mbg');
         var dateVal = node.date ? node.date.split('T')[0] : '';
+        var sizeVal = Math.round((node.size || 1) * 100);
         var extraFields = '';
         if (node.type === 'note') { extraFields = '<div class="field"><label>Notes</label><textarea id="me-ct" class="nca" rows="5">' + escH(node.content) + '</textarea></div>'; }
         else if (node.type === 'photo') { var psrc = mediaSrc(node, 'image'); extraFields = '<div class="field"><label>Caption</label><textarea id="me-ct" class="nca" rows="2">' + escH(node.content) + '</textarea></div><div class="field"><label>Replace Photo</label><input type="file" id="me-pf" accept="image/*">' + (psrc ? '<img id="me-pi" src="' + psrc + '" class="iprev">' : '<img id="me-pi" class="iprev" style="display:none">') + '</div>'; }
@@ -3778,8 +3821,11 @@
         else if (node.type === 'capsule') { var ulVal = node.unlockDate ? node.unlockDate.split('T')[0] : ''; extraFields = '<div class="field"><label>Secret Message</label><textarea id="me-ct" class="nca" rows="4">' + escH(node.content) + '</textarea></div><div class="field"><label>Unlock Date</label><input id="me-ul" type="date" value="' + ulVal + '" style="width:100%;background:var(--surf2);border:1px solid var(--bd2);border-radius:10px;padding:11px 14px;color:var(--tp);font-size:14px;outline:none"></div>'; }
         else if (node.type === 'universe') { extraFields = '<div class="field"><label>Description</label><textarea id="me-ct" class="nca" rows="2">' + escH(node.content) + '</textarea></div><button class="bsm bsmp" id="me-enter-univ" style="width:100%;margin-top:10px;padding:12px;font-size:15px">Enter Universe &rarr;</button>'; }
 
-        bg.innerHTML = '<div class="modal"><div class="mclose" id="me-x">&#10005;</div><h3>Edit Memory</h3><p class="msub" style="color:' + typeColorMap[node.type] + ';font-family:\'JetBrains Mono\',monospace;font-size:11px;letter-spacing:1px;text-transform:uppercase">' + node.type + '</p><div class="field"><label>Title</label><input id="me-ti" type="text" value="' + escH(node.title) + '" placeholder="Memory title..."></div>' + extraFields + '<div class="field"><label>Date</label><input id="me-dt" type="date" value="' + dateVal + '" style="width:100%;background:var(--surf2);border:1px solid var(--bd2);border-radius:10px;padding:11px 14px;color:var(--tp);font-size:14px;outline:none"></div><div class="macts"><button class="bsm bsmd" id="me-del">Delete</button><button class="bsm bsmg" id="me-cn">Cancel</button><button class="bsm bsmp" id="me-sv">Save</button></div></div>';
+        bg.innerHTML = '<div class="modal"><div class="mclose" id="me-x">&#10005;</div><h3>Edit Memory</h3><p class="msub" style="color:' + typeColorMap[node.type] + ';font-family:\'JetBrains Mono\',monospace;font-size:11px;letter-spacing:1px;text-transform:uppercase">' + node.type + '</p><div class="field"><label>Title</label><input id="me-ti" type="text" value="' + escH(node.title) + '" placeholder="Memory title..."></div>' + extraFields + '<div class="field"><label>Size</label><div class="srow"><input id="me-sz" type="range" min="70" max="180" step="5" value="' + sizeVal + '"><span id="me-szv" class="sval">' + sizeVal + '%</span></div></div><div class="field"><label>Date</label><input id="me-dt" type="date" value="' + dateVal + '" style="width:100%;background:var(--surf2);border:1px solid var(--bd2);border-radius:10px;padding:11px 14px;color:var(--tp);font-size:14px;outline:none"></div><div class="macts"><button class="bsm bsmd" id="me-del">Delete</button><button class="bsm bsmg" id="me-cn">Cancel</button><button class="bsm bsmp" id="me-sv">Save</button></div></div>';
         document.body.appendChild(bg);
+
+        var szInput = qs('#me-sz'), szVal = qs('#me-szv');
+        if (szInput && szVal) szInput.oninput = function () { szVal.textContent = (parseInt(szInput.value || '100', 10) || 100) + '%'; };
 
         if (node.type === 'photo') {
           var pf = qs('#me-pf');
@@ -3839,6 +3885,7 @@
           var oldImageKey = node.imageKey || '';
           var oldVideoKey = node.videoKey || '';
           var ct = qs('#me-ct'); if (ct) upd.content = ct.value;
+          var sz = qs('#me-sz'); if (sz) { var pct = Math.max(70, Math.min(180, parseFloat(sz.value) || 100)); upd.size = pct / 100; }
           var dt = qs('#me-dt'); if (dt && dt.value) upd.date = new Date(dt.value).toISOString();
           var ul = qs('#me-ul'); if (ul && ul.value) upd.unlockDate = new Date(ul.value).toISOString();
           var pi = qs('#me-pi'); if (pi && pi.dataset.newsrc) { upd.imageBase64 = pi.dataset.newsrc; upd.imageUrl = ''; upd.imageKey = ''; } else if (pi && pi.dataset.newurl) { upd.imageUrl = pi.dataset.newurl; upd.imageKey = pi.dataset.newkey || ''; upd.imageBase64 = ''; }
