@@ -1323,8 +1323,7 @@
     .mnode {
       position: absolute;
       transform: translate(-50%, -50%);
-      cursor: pointer;
-      --ns: 1
+      cursor: pointer
     }
 
     .mnode:hover .nc {
@@ -1340,9 +1339,7 @@
       padding: 12px 14px;
       min-width: 130px;
       max-width: 190px;
-      animation: fy linear infinite;
-      transform: scale(var(--ns));
-      transform-origin: center center
+      animation: fy linear infinite
     }
 
     .nc-note {
@@ -3024,7 +3021,7 @@
         var wrap = mkEl('div', 'mnode');
         wrap.id = 'nd-' + node.id;
         wrap.style.left = node.pos.x + 'px'; wrap.style.top = node.pos.y + 'px';
-        wrap.style.setProperty('--ns', String(node.size || 1));
+        wrap.style.transform = 'translate(-50%, -50%) scale(' + (node.size || 1) + ')';
         if (this.selId === node.id) wrap.classList.add('sel');
 
         var dur = (3 + Math.random() * 3).toFixed(1) + 's';
@@ -3813,6 +3810,8 @@
         var bg = mkEl('div', 'mbg');
         var dateVal = node.date ? node.date.split('T')[0] : '';
         var sizeVal = Math.round((node.size || 1) * 100);
+        var originalSize = node.size || 1;
+        var saved = false;
         var extraFields = '';
         if (node.type === 'note') { extraFields = '<div class="field"><label>Notes</label><textarea id="me-ct" class="nca" rows="5">' + escH(node.content) + '</textarea></div>'; }
         else if (node.type === 'photo') { var psrc = mediaSrc(node, 'image'); extraFields = '<div class="field"><label>Caption</label><textarea id="me-ct" class="nca" rows="2">' + escH(node.content) + '</textarea></div><div class="field"><label>Replace Photo</label><input type="file" id="me-pf" accept="image/*">' + (psrc ? '<img id="me-pi" src="' + psrc + '" class="iprev">' : '<img id="me-pi" class="iprev" style="display:none">') + '</div>'; }
@@ -3821,11 +3820,20 @@
         else if (node.type === 'capsule') { var ulVal = node.unlockDate ? node.unlockDate.split('T')[0] : ''; extraFields = '<div class="field"><label>Secret Message</label><textarea id="me-ct" class="nca" rows="4">' + escH(node.content) + '</textarea></div><div class="field"><label>Unlock Date</label><input id="me-ul" type="date" value="' + ulVal + '" style="width:100%;background:var(--surf2);border:1px solid var(--bd2);border-radius:10px;padding:11px 14px;color:var(--tp);font-size:14px;outline:none"></div>'; }
         else if (node.type === 'universe') { extraFields = '<div class="field"><label>Description</label><textarea id="me-ct" class="nca" rows="2">' + escH(node.content) + '</textarea></div><button class="bsm bsmp" id="me-enter-univ" style="width:100%;margin-top:10px;padding:12px;font-size:15px">Enter Universe &rarr;</button>'; }
 
-        bg.innerHTML = '<div class="modal"><div class="mclose" id="me-x">&#10005;</div><h3>Edit Memory</h3><p class="msub" style="color:' + typeColorMap[node.type] + ';font-family:\'JetBrains Mono\',monospace;font-size:11px;letter-spacing:1px;text-transform:uppercase">' + node.type + '</p><div class="field"><label>Title</label><input id="me-ti" type="text" value="' + escH(node.title) + '" placeholder="Memory title..."></div>' + extraFields + '<div class="field"><label>Size</label><div class="srow"><input id="me-sz" type="range" min="70" max="180" step="5" value="' + sizeVal + '"><span id="me-szv" class="sval">' + sizeVal + '%</span></div></div><div class="field"><label>Date</label><input id="me-dt" type="date" value="' + dateVal + '" style="width:100%;background:var(--surf2);border:1px solid var(--bd2);border-radius:10px;padding:11px 14px;color:var(--tp);font-size:14px;outline:none"></div><div class="macts"><button class="bsm bsmd" id="me-del">Delete</button><button class="bsm bsmg" id="me-cn">Cancel</button><button class="bsm bsmp" id="me-sv">Save</button></div></div>';
+        bg.innerHTML = '<div class="modal"><div class="mclose" id="me-x">&#10005;</div><h3>Edit Memory</h3><p class="msub" style="color:' + typeColorMap[node.type] + ';font-family:\'JetBrains Mono\',monospace;font-size:11px;letter-spacing:1px;text-transform:uppercase">' + node.type + '</p><div class="field"><label>Title</label><input id="me-ti" type="text" value="' + escH(node.title) + '" placeholder="Memory title..."></div>' + extraFields + '<div class="field"><label>Size</label><div class="srow"><input id="me-sz" type="range" min="40" max="180" step="5" value="' + sizeVal + '"><span id="me-szv" class="sval">' + sizeVal + '%</span></div></div><div class="field"><label>Date</label><input id="me-dt" type="date" value="' + dateVal + '" style="width:100%;background:var(--surf2);border:1px solid var(--bd2);border-radius:10px;padding:11px 14px;color:var(--tp);font-size:14px;outline:none"></div><div class="macts"><button class="bsm bsmd" id="me-del">Delete</button><button class="bsm bsmg" id="me-cn">Cancel</button><button class="bsm bsmp" id="me-sv">Save</button></div></div>';
         document.body.appendChild(bg);
 
         var szInput = qs('#me-sz'), szVal = qs('#me-szv');
-        if (szInput && szVal) szInput.oninput = function () { szVal.textContent = (parseInt(szInput.value || '100', 10) || 100) + '%'; };
+        if (szInput && szVal) {
+          szInput.oninput = function () {
+            var pct = (parseInt(szInput.value || '100', 10) || 100);
+            szVal.textContent = pct + '%';
+            node.size = pct / 100;
+            Canvas.addNodeEl(node);
+            Canvas.drawConnections();
+            Canvas.drawMinimap();
+          };
+        }
 
         if (node.type === 'photo') {
           var pf = qs('#me-pf');
@@ -3868,7 +3876,15 @@
         var eu = qs('#me-enter-univ');
         if (eu) eu.onclick = function () { close(); App.navigate('canvas', { id: node.targetUniverseId }); };
 
-        function close() { bg.remove(); }
+        function close() {
+          if (!saved && node.size !== originalSize) {
+            node.size = originalSize;
+            Canvas.addNodeEl(node);
+            Canvas.drawConnections();
+            Canvas.drawMinimap();
+          }
+          bg.remove();
+        }
         qs('#me-x').onclick = close; qs('#me-cn').onclick = close;
         bg.onclick = function (e) { if (e.target === bg) close(); };
 
@@ -3885,7 +3901,7 @@
           var oldImageKey = node.imageKey || '';
           var oldVideoKey = node.videoKey || '';
           var ct = qs('#me-ct'); if (ct) upd.content = ct.value;
-          var sz = qs('#me-sz'); if (sz) { var pct = Math.max(70, Math.min(180, parseFloat(sz.value) || 100)); upd.size = pct / 100; }
+          var sz = qs('#me-sz'); if (sz) { var pct = Math.max(40, Math.min(180, parseFloat(sz.value) || 100)); upd.size = pct / 100; }
           var dt = qs('#me-dt'); if (dt && dt.value) upd.date = new Date(dt.value).toISOString();
           var ul = qs('#me-ul'); if (ul && ul.value) upd.unlockDate = new Date(ul.value).toISOString();
           var pi = qs('#me-pi'); if (pi && pi.dataset.newsrc) { upd.imageBase64 = pi.dataset.newsrc; upd.imageUrl = ''; upd.imageKey = ''; } else if (pi && pi.dataset.newurl) { upd.imageUrl = pi.dataset.newurl; upd.imageKey = pi.dataset.newkey || ''; upd.imageBase64 = ''; }
@@ -3894,6 +3910,7 @@
           if (upd.imageKey && oldImageKey && upd.imageKey !== oldImageKey) Cloud.deleteFile(oldImageKey).catch(function (err) { console.warn('Old image delete failed', err); });
           if (upd.videoKey && oldVideoKey && upd.videoKey !== oldVideoKey) Cloud.deleteFile(oldVideoKey).catch(function (err) { console.warn('Old video delete failed', err); });
           Object.assign(node, upd);
+          saved = true;
           Canvas.addNodeEl(node); Canvas.drawConnections(); Canvas.drawMinimap();
           close();
         };
