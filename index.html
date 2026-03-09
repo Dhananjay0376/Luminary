@@ -2368,6 +2368,14 @@
       return [node.imageKey, node.audioKey, node.videoKey].filter(Boolean);
     }
 
+    function universeMediaKeys(universe) {
+      var keys = {};
+      ((universe && universe.nodes) || []).forEach(function (node) {
+        mediaKeys(node).forEach(function (key) { keys[key] = true; });
+      });
+      return keys;
+    }
+
     // ============================================================
     // APP STATE
     // ============================================================
@@ -2378,6 +2386,7 @@
       _restoringHistory: false,
       _storeSaveTimer: null,
       _cloudSaveTimer: null,
+      _pendingMediaDeletes: {},
       _evs: [],
       on: function (el, type, fn) { el.addEventListener(type, fn); this._evs.push({ el: el, type: type, fn: fn }) },
       offAll: function () { this._evs.forEach(function (e) { e.el.removeEventListener(e.type, e.fn) }); this._evs = [] },
@@ -2444,10 +2453,33 @@
         Canvas.buildWorld();
         Canvas.applyTransform();
       },
+      scheduleMediaDelete: function (key) {
+        var self = this;
+        if (!key || !Cloud.canUploadMedia() || !this.user || this.user.provider !== 'firebase') return;
+        this.cancelPendingMediaDelete(key);
+        this._pendingMediaDeletes[key] = setTimeout(function () {
+          Cloud.deleteFile(key).catch(function (err) { console.warn('Media delete failed', err); }).finally(function () {
+            delete self._pendingMediaDeletes[key];
+          });
+        }, 30000);
+      },
+      cancelPendingMediaDelete: function (key) {
+        if (!key || !this._pendingMediaDeletes[key]) return;
+        clearTimeout(this._pendingMediaDeletes[key]);
+        delete this._pendingMediaDeletes[key];
+      },
+      reconcileMediaDeletes: function (beforeUniverse, afterUniverse) {
+        var beforeKeys = universeMediaKeys(beforeUniverse);
+        var afterKeys = universeMediaKeys(afterUniverse);
+        Object.keys(afterKeys).forEach(this.cancelPendingMediaDelete.bind(this));
+        Object.keys(beforeKeys).forEach(function (key) {
+          if (!afterKeys[key]) App.scheduleMediaDelete(key);
+        });
+      },
       cleanupNodeMedia: function (node) {
         if (!node || !Cloud.canUploadMedia() || !this.user || this.user.provider !== 'firebase') return;
         mediaKeys(node).forEach(function (key) {
-          Cloud.deleteFile(key).catch(function (err) { console.warn('Media delete failed', err); });
+          App.scheduleMediaDelete(key);
         });
       },
       importLegacyUniversesForCloudUser: async function (user, currentUniverses) {
@@ -2489,7 +2521,8 @@
       undo: function () {
         var entry = this.ensureHistory();
         if (!entry || !entry.undo.length || !this.universe) return;
-        entry.redo.push(this.cloneData(this.universe));
+        var currentUniverse = this.cloneData(this.universe);
+        entry.redo.push(currentUniverse);
         var prev = entry.undo.pop();
         entry.current = this.cloneData(prev);
         var idx = this.universes.findIndex(function (u) { return u.id === App.activeId; });
@@ -2498,6 +2531,7 @@
         this.universes[idx] = this.cloneData(prev);
         this._restoringHistory = false;
         entry.currentSerialized = JSON.stringify(entry.current || null);
+        this.reconcileMediaDeletes(currentUniverse, this.universes[idx]);
         this.queuePersistence();
         this.refreshCanvasState();
         Canvas.flashSave();
@@ -2505,7 +2539,8 @@
       redo: function () {
         var entry = this.ensureHistory();
         if (!entry || !entry.redo.length || !this.universe) return;
-        entry.undo.push(this.cloneData(this.universe));
+        var currentUniverse = this.cloneData(this.universe);
+        entry.undo.push(currentUniverse);
         var next = entry.redo.pop();
         entry.current = this.cloneData(next);
         var idx = this.universes.findIndex(function (u) { return u.id === App.activeId; });
@@ -2514,6 +2549,7 @@
         this.universes[idx] = this.cloneData(next);
         this._restoringHistory = false;
         entry.currentSerialized = JSON.stringify(entry.current || null);
+        this.reconcileMediaDeletes(currentUniverse, this.universes[idx]);
         this.queuePersistence();
         this.refreshCanvasState();
         Canvas.flashSave();
